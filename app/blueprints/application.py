@@ -91,6 +91,110 @@ def create_application():
         db.session.rollback()
         return jsonify({'error': f'Failed to create application: {str(e)}'}), 500
 
+@bp.route('/<int:application_id>', methods=['PUT'])
+@applicant_required
+def update_application(application_id):
+    try:
+        applicant = get_current_user()
+        data = request.get_json()
+        
+        # Find the application
+        application = OrganizationApplication.query.get_or_404(application_id)
+        
+        # Verify ownership
+        if application.applicant_id != applicant.id:
+            return jsonify({'error': 'Access denied'}), 403
+        
+        # Verify application is in editable state
+        if application.status not in [ApplicationStatus.PENDING, ApplicationStatus.REVIEWING_AGAIN]:
+            return jsonify({'error': 'Application cannot be edited in its current state'}), 400
+        
+        # Validate required fields if they are provided
+        required_fields = {
+            'organization_name': 'Organization name is required',
+            'organization_email': 'Organization email is required',
+            'organization_phone': 'Organization phone is required',
+        }
+        
+        for field, error_msg in required_fields.items():
+            if field in data and not data[field]:
+                return jsonify({'error': error_msg}), 400
+        
+        # Update application fields if provided
+        if 'organization_name' in data:
+            application.organization_name = data['organization_name'].strip()
+        
+        if 'acronym' in data:
+            application.acronym = data['acronym'].strip() if data['acronym'] else None
+            
+        if 'organization_email' in data:
+            application.organization_email = data['organization_email'].strip().lower()
+            
+        if 'organization_phone' in data:
+            application.organization_phone = data['organization_phone'].strip()
+        
+        # Update cluster information if provided
+        cluster_info = application.cluster_information
+        if cluster_info:
+            if 'cluster_of_intervention' in data:
+                cluster_info.cluster_of_intervention = data['cluster_of_intervention'].strip()
+                
+            if 'source_of_fund' in data:
+                cluster_info.source_of_fund = data['source_of_fund'].strip()
+                
+            if 'description' in data:
+                cluster_info.description = data['description'].strip()
+        
+        # Update last modified timestamp
+        application.last_modified = datetime.utcnow()
+        
+        # Add a comment to log the update
+        comment = ApplicationComment(
+            content=f"Application updated by applicant in response to review feedback.",
+            performed_by_id=applicant.id,
+            application_id=application.id
+        )
+        db.session.add(comment)
+        
+        # Create notification for FBO officers (if status is REVIEWING_AGAIN)
+        if application.status == ApplicationStatus.REVIEWING_AGAIN:
+            fbo_officers = Admin.query.filter_by(role=AdminRole.FBO_OFFICER, enabled=True).all()
+            for officer in fbo_officers:
+                notification = Notification(
+                    admin_id=officer.id,
+                    application_id=application.id,
+                    type=NotificationType.STATUS_CHANGE,
+                    title='Application Updated',
+                    message=f'Application for {application.organization_name} has been updated by the applicant'
+                )
+                db.session.add(notification)
+        
+        application.status = ApplicationStatus.PENDING
+        
+        db.session.commit()
+        
+        # Send real-time notification to FBO officers if status is REVIEWING_AGAIN
+        if application.status == ApplicationStatus.REVIEWING_AGAIN or application.status == ApplicationStatus.PENDING:
+            socketio.emit('application_updated', {
+                'application_id': application.id,
+                'organization_name': application.organization_name,
+                'applicant_name': f'{applicant.firstname} {applicant.lastname}'
+            }, room='fbo_officers')
+        
+        # Return updated application
+        app_data = application.to_dict()
+        app_data['canEdit'] = application.status in [ApplicationStatus.PENDING, ApplicationStatus.REVIEWING_AGAIN]
+        app_data['cluster_information'] = application.cluster_information.to_dict() if application.cluster_information else None
+        
+        return jsonify({
+            'message': 'Application updated successfully',
+            'application': app_data
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to update application: {str(e)}'}), 500
+    
 @bp.route('/<int:application_id>/comments', methods=['POST'])
 @admin_required()
 def add_comment(application_id):
@@ -338,6 +442,7 @@ def get_applications():
             role_permissions = {
                 AdminRole.FBO_OFFICER: {
                     'can_view': [
+                        ApplicationStatus.REJECTED,
                         ApplicationStatus.PENDING,
                         ApplicationStatus.FBO_REVIEW,
                         ApplicationStatus.REVIEWING_AGAIN,
@@ -360,6 +465,7 @@ def get_applications():
                 },
                 AdminRole.DIVISION_MANAGER: {
                     'can_view': [
+                        ApplicationStatus.REJECTED,
                         ApplicationStatus.TRANSFER_TO_DM,
                         ApplicationStatus.DM_REVIEW,
                         ApplicationStatus.TRANSFER_TO_HOD,
@@ -378,6 +484,7 @@ def get_applications():
                 },
                 AdminRole.HOD: {
                     'can_view': [
+                        ApplicationStatus.REJECTED,
                         ApplicationStatus.TRANSFER_TO_HOD,
                         ApplicationStatus.HOD_REVIEW,
                         ApplicationStatus.TRANSFER_TO_SG,
@@ -394,6 +501,7 @@ def get_applications():
                 },
                 AdminRole.SECRETARY_GENERAL: {
                     'can_view': [
+                        ApplicationStatus.REJECTED,
                         ApplicationStatus.TRANSFER_TO_SG,
                         ApplicationStatus.SG_REVIEW,
                         ApplicationStatus.TRANSFER_TO_CEO,
@@ -408,10 +516,11 @@ def get_applications():
                 },
                 AdminRole.CEO: {
                     'can_view': [
+                        ApplicationStatus.REJECTED,
                         ApplicationStatus.TRANSFER_TO_CEO,
                         ApplicationStatus.CEO_REVIEW,
                         ApplicationStatus.APPROVED,
-                        ApplicationStatus.CERTIFICATE_ISSUED
+                        ApplicationStatus.CERTIFICATE_ISSUED,
                     ],
                     'can_edit': [
                         ApplicationStatus.TRANSFER_TO_CEO,
