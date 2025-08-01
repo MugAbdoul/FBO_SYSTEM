@@ -1,5 +1,6 @@
 import io
 import base64
+import os
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, letter, legal
@@ -58,6 +59,13 @@ class ModernCertificateGenerator:
         self.border_radius = 6
         self.shadow_offset = 1
         self.line_height_ratio = 1.2
+        
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(current_dir)  # Go up one level from utils to app root
+        
+        # Construct proper paths to the images
+        self.logo_path = os.path.join(base_dir, 'static', 'images', 'rgb_logo.jpg')
+        self.signature_path = os.path.join(base_dir, 'static', 'images', 'signature.png')
         
     def _calculate_font_sizes(self):
         """Calculate smaller, more compact font sizes"""
@@ -141,8 +149,8 @@ class ModernCertificateGenerator:
             canvas.setFillColor(self.colors['gold'])
     
     def _draw_enhanced_header(self, canvas, y_position):
-        """Draw compact enhanced header"""
-        header_height = 75
+        """Draw compact enhanced header with logo"""
+        header_height = 90  # Increased height to accommodate logo
         header_margin = 25
         
         # Header background
@@ -160,7 +168,23 @@ class ModernCertificateGenerator:
                         self.content_width - (2 * header_margin), header_height,
                         self.border_radius, fill=0, stroke=1)
         
-        current_y = y_position - 15
+        # Try to add logo
+        logo_width = 60
+        logo_height = 60
+        logo_x = self.width / 2 - logo_width / 2
+        logo_y = y_position - 15 - logo_height
+        
+        try:
+            logo_image = ImageReader(self.logo_path)
+            canvas.drawImage(logo_image, logo_x, logo_y, width=logo_width, height=logo_height)
+        except Exception as e:
+            # Fallback if logo loading fails
+            canvas.setFillColor(self.colors['primary'])
+            canvas.rect(logo_x, logo_y, logo_width, logo_height, fill=0, stroke=1)
+            canvas.setFont("Helvetica-Bold", self.font_sizes['caption'])
+            canvas.drawCentredString(logo_x + logo_width/2, logo_y + logo_height/2, "RGB LOGO")
+        
+        current_y = y_position - logo_height - 20
         
         # Government title
         canvas.setFillColor(self.colors['primary'])
@@ -277,7 +301,7 @@ class ModernCertificateGenerator:
         canvas.setFont("Helvetica-Bold", self.font_sizes['small'])
         canvas.drawRightString(right_x, content_y, "ACTIVE")
         canvas.setFillColor(self.colors['text_primary'])
-        canvas.drawRightString(right_x, content_y - 15, "Indefinite")
+        canvas.drawRightString(right_x, content_y - 15, "3 years")
         
         return y_position - card_height - 12
     
@@ -404,7 +428,7 @@ class ModernCertificateGenerator:
         return y_position - card_height - 15
     
     def _draw_signature_and_verification_section(self, canvas, application, y_position):
-        """Draw well-aligned signature section with QR code verification"""
+        """Draw well-aligned signature section with QR code verification and signature image"""
         section_height = 150
         section_margin = 35
         
@@ -429,11 +453,6 @@ class ModernCertificateGenerator:
         canvas.setFont("Helvetica-Bold", self.font_sizes['small'])
         canvas.drawString(sig_x, sig_y, "DIGITALLY AUTHORIZED BY:")
         
-        # Signature line
-        canvas.setStrokeColor(self.colors['text_secondary'])
-        canvas.setLineWidth(0.6)
-        # canvas.line(sig_x, sig_y - 20, sig_x + sig_width - 30, sig_y - 20)
-        
         # Signatory name
         canvas.setFillColor(self.colors['text_primary'])
         canvas.setFont("Helvetica-Bold", self.font_sizes['body'])
@@ -444,11 +463,45 @@ class ModernCertificateGenerator:
         canvas.drawString(sig_x, sig_y - 32, "Chief Executive Officer")
         canvas.drawString(sig_x, sig_y - 42, "Rwanda Governance Board")
         
+        # Digital signature image
+        try:
+            from PIL import Image
+            # Open image with PIL to properly handle transparency
+            pil_img = Image.open(self.signature_path)
+            
+            # Create a white background image
+            white_bg = Image.new("RGBA", pil_img.size, "WHITE")
+            
+            # Paste the signature onto the white background using the alpha channel as mask
+            white_bg.paste(pil_img, (0, 0), pil_img)
+            
+            # Convert to RGB (removing alpha) and save to a buffer
+            rgb_img = white_bg.convert('RGB')
+            img_buffer = io.BytesIO()
+            rgb_img.save(img_buffer, format='JPEG')
+            img_buffer.seek(0)
+            
+            # Draw the processed image
+            sig_img_width = 80
+            sig_img_height = 40
+            sig_img_x = sig_x
+            sig_img_y = sig_y - 85
+            
+            # Use the buffered image
+            canvas.drawImage(ImageReader(img_buffer), sig_img_x, sig_img_y, 
+                            width=sig_img_width, height=sig_img_height)
+            
+        except Exception as e:
+            # Fallback if signature image loading fails
+            canvas.setStrokeColor(self.colors['text_secondary'])
+            canvas.setLineWidth(0.6)
+            canvas.line(sig_x, sig_y - 65, sig_x + sig_width - 30, sig_y - 65)
+        
         # Digital timestamp
         canvas.setFillColor(self.colors['text_secondary'])
         canvas.setFont("Helvetica", self.font_sizes['caption'])
         timestamp_text = f"Digitally signed: {application.certificate_issued_at.strftime('%B %d, %Y at %H:%M UTC')}"
-        canvas.drawString(sig_x, sig_y - 55, timestamp_text)
+        canvas.drawString(sig_x, sig_y - 95, timestamp_text)
         
         # Right side - QR Code and Verification (40% of container)
         qr_section_width = container_width * 0.4
@@ -458,14 +511,6 @@ class ModernCertificateGenerator:
         # QR Code area background
         qr_bg_width = qr_section_width - 20
         qr_bg_height = section_height - 20
-        # canvas.setFillColor(self.colors['white'])
-        # canvas.roundRect(qr_section_x, container_y + 10, qr_bg_width, qr_bg_height, 
-        #                 4, fill=1, stroke=0)
-        
-        # canvas.setStrokeColor(self.colors['border_light'])
-        # canvas.setLineWidth(1)
-        # canvas.roundRect(qr_section_x, container_y + 10, qr_bg_width, qr_bg_height, 
-        #                 4, fill=0, stroke=1)
         
         # QR Code
         if hasattr(application, 'qr_code_data') and application.qr_code_data:
@@ -496,34 +541,6 @@ class ModernCertificateGenerator:
                 canvas.setFont("Helvetica", self.font_sizes['small'])
                 canvas.drawCentredString(qr_section_x + qr_bg_width/2, qr_section_y - 30, "QR CODE")
                 canvas.drawCentredString(qr_section_x + qr_bg_width/2, qr_section_y - 45, "VERIFICATION")
-        
-        # Official seal in the signature area
-        seal_size = 30
-        seal_x = sig_x + sig_width - 240
-        seal_y = sig_y - 92
-        
-        # Seal background
-        canvas.setFillColor(self.colors['gold'])
-        canvas.circle(seal_x, seal_y, seal_size + 2, fill=1, stroke=0)
-        
-        # Main seal
-        canvas.setStrokeColor(self.colors['primary'])
-        canvas.setFillColor(self.colors['white'])
-        canvas.setLineWidth(2)
-        canvas.circle(seal_x, seal_y, seal_size, fill=1, stroke=1)
-        
-        # Inner seal ring
-        canvas.setLineWidth(1)
-        canvas.circle(seal_x, seal_y, seal_size * 0.75, fill=0, stroke=1)
-        
-        # Seal text
-        canvas.setFillColor(self.colors['primary'])
-        canvas.setFont("Helvetica-Bold", self.font_sizes['micro'])
-        canvas.drawCentredString(seal_x, seal_y + 8, "REPUBLIC")
-        canvas.drawCentredString(seal_x, seal_y, "OF")
-        canvas.drawCentredString(seal_x, seal_y - 8, "RWANDA")
-        canvas.setFont("Helvetica", self.font_sizes['micro'])
-        canvas.drawCentredString(seal_x, seal_y - 18, "OFFICIAL SEAL")
         
         return y_position - section_height - 15
     
@@ -588,6 +605,7 @@ class ModernCertificateGenerator:
         current_y = self._draw_enhanced_header(p, current_y)
         
         # Certificate title card
+        current_y += -20
         current_y = self._draw_certificate_title_card(p, current_y)
         
         # Certificate info card
