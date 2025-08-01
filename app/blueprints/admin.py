@@ -331,7 +331,7 @@ def get_dashboard_stats():
         else:
             # Other roles get limited stats based on their responsibilities
             role_status_map = {
-                AdminRole.FBO_OFFICER: [ApplicationStatus.PENDING, ApplicationStatus.UNDER_REVIEW, ApplicationStatus.MISSING_DOCUMENTS],
+                AdminRole.FBO_OFFICER: [ApplicationStatus.PENDING, ApplicationStatus.UNDER_REVIEW, ApplicationStatus.REVIEWING_AGAIN],
                 AdminRole.DIVISION_MANAGER: [ApplicationStatus.DRAFT],
                 AdminRole.HOD: [ApplicationStatus.DM_REVIEW],
                 AdminRole.SECRETARY_GENERAL: [ApplicationStatus.HOD_REVIEW]

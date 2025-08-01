@@ -4,7 +4,7 @@ from enum import Enum
 
 class ApplicationStatus(Enum):
     PENDING = "PENDING"
-    MISSING_DOCUMENTS = "MISSING_DOCUMENTS"
+    REVIEWING_AGAIN = "REVIEWING_AGAIN"
     FBO_REVIEW = "FBO_REVIEW"
     TRANSFER_TO_DM = "TRANSFER_TO_DM"
     DM_REVIEW = "DM_REVIEW"

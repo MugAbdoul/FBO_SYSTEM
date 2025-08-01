@@ -164,17 +164,17 @@ def update_application_status():
         # Validate status transition based on admin role
         valid_transitions = {
             AdminRole.FBO_OFFICER: {
-                ApplicationStatus.PENDING: [ApplicationStatus.FBO_REVIEW, ApplicationStatus.MISSING_DOCUMENTS],
-                ApplicationStatus.FBO_REVIEW: [ApplicationStatus.TRANSFER_TO_DM, ApplicationStatus.MISSING_DOCUMENTS],
-                ApplicationStatus.MISSING_DOCUMENTS: [ApplicationStatus.FBO_REVIEW]
+                ApplicationStatus.PENDING: [ApplicationStatus.FBO_REVIEW, ApplicationStatus.REVIEWING_AGAIN],
+                ApplicationStatus.FBO_REVIEW: [ApplicationStatus.TRANSFER_TO_DM, ApplicationStatus.REVIEWING_AGAIN],
+                ApplicationStatus.REVIEWING_AGAIN: [ApplicationStatus.FBO_REVIEW]
             },
             AdminRole.DIVISION_MANAGER: {
                 ApplicationStatus.TRANSFER_TO_DM: [ApplicationStatus.DM_REVIEW],
-                ApplicationStatus.DM_REVIEW: [ApplicationStatus.TRANSFER_TO_HOD, ApplicationStatus.MISSING_DOCUMENTS]
+                ApplicationStatus.DM_REVIEW: [ApplicationStatus.TRANSFER_TO_HOD, ApplicationStatus.REVIEWING_AGAIN]
             },
             AdminRole.HOD: {
                 ApplicationStatus.TRANSFER_TO_HOD: [ApplicationStatus.HOD_REVIEW],
-                ApplicationStatus.HOD_REVIEW: [ApplicationStatus.TRANSFER_TO_SG, ApplicationStatus.MISSING_DOCUMENTS]
+                ApplicationStatus.HOD_REVIEW: [ApplicationStatus.TRANSFER_TO_SG, ApplicationStatus.REVIEWING_AGAIN]
             },
             AdminRole.SECRETARY_GENERAL: {
                 ApplicationStatus.TRANSFER_TO_SG: [ApplicationStatus.SG_REVIEW],
@@ -322,11 +322,11 @@ def get_applications():
         if claims.get('type') == 'applicant':
             # Applicant can only see their own applications
             applications = OrganizationApplication.query.filter_by(applicant_id=user.id).all()
-            # Add canEdit field for applicants (they can edit only PENDING and MISSING_DOCUMENTS)
+            # Add canEdit field for applicants (they can edit only PENDING and REVIEWING_AGAIN)
             applications_data = []
             for app in applications:
                 app_dict = app.to_dict()
-                app_dict['canEdit'] = app.status in [ApplicationStatus.PENDING, ApplicationStatus.MISSING_DOCUMENTS]
+                app_dict['canEdit'] = app.status in [ApplicationStatus.PENDING, ApplicationStatus.REVIEWING_AGAIN]
                 applications_data.append(app_dict)
             
             return jsonify({
@@ -340,7 +340,7 @@ def get_applications():
                     'can_view': [
                         ApplicationStatus.PENDING,
                         ApplicationStatus.FBO_REVIEW,
-                        ApplicationStatus.MISSING_DOCUMENTS,
+                        ApplicationStatus.REVIEWING_AGAIN,
                         ApplicationStatus.TRANSFER_TO_DM,
                         ApplicationStatus.DM_REVIEW,
                         ApplicationStatus.TRANSFER_TO_HOD,
@@ -355,7 +355,7 @@ def get_applications():
                     'can_edit': [
                         ApplicationStatus.PENDING,
                         ApplicationStatus.FBO_REVIEW,
-                        ApplicationStatus.MISSING_DOCUMENTS
+                        ApplicationStatus.REVIEWING_AGAIN
                     ]
                 },
                 AdminRole.DIVISION_MANAGER: {
@@ -469,8 +469,8 @@ def get_application(application_id):
         if claims.get('type') == 'applicant':
             if application.applicant_id != user.id:
                 return jsonify({'error': 'Access denied'}), 403
-            # Applicant can edit only PENDING and MISSING_DOCUMENTS
-            can_edit = application.status in [ApplicationStatus.PENDING, ApplicationStatus.MISSING_DOCUMENTS]
+            # Applicant can edit only PENDING and REVIEWING_AGAIN
+            can_edit = application.status in [ApplicationStatus.PENDING, ApplicationStatus.REVIEWING_AGAIN]
         
         elif claims.get('type') == 'admin':
             # Define what statuses each admin role can view and edit
@@ -479,7 +479,7 @@ def get_application(application_id):
                     'can_view': [
                         ApplicationStatus.PENDING,
                         ApplicationStatus.FBO_REVIEW,
-                        ApplicationStatus.MISSING_DOCUMENTS,
+                        ApplicationStatus.REVIEWING_AGAIN,
                         ApplicationStatus.TRANSFER_TO_DM,
                         ApplicationStatus.DM_REVIEW,
                         ApplicationStatus.TRANSFER_TO_HOD,
@@ -494,7 +494,7 @@ def get_application(application_id):
                     'can_edit': [
                         ApplicationStatus.PENDING,
                         ApplicationStatus.FBO_REVIEW,
-                        ApplicationStatus.MISSING_DOCUMENTS
+                        ApplicationStatus.REVIEWING_AGAIN
                     ]
                 },
                 AdminRole.DIVISION_MANAGER: {
@@ -596,7 +596,7 @@ def get_application_stats():
             AdminRole.FBO_OFFICER: [
                 ApplicationStatus.PENDING,
                 ApplicationStatus.FBO_REVIEW,
-                ApplicationStatus.MISSING_DOCUMENTS,
+                ApplicationStatus.REVIEWING_AGAIN,
                 ApplicationStatus.TRANSFER_TO_DM,
                 ApplicationStatus.DM_REVIEW,
                 ApplicationStatus.TRANSFER_TO_HOD,
@@ -666,7 +666,7 @@ def get_application_stats():
             
             # Role-specific stats
             role_edit_permissions = {
-                AdminRole.FBO_OFFICER: [ApplicationStatus.PENDING, ApplicationStatus.FBO_REVIEW, ApplicationStatus.MISSING_DOCUMENTS],
+                AdminRole.FBO_OFFICER: [ApplicationStatus.PENDING, ApplicationStatus.FBO_REVIEW, ApplicationStatus.REVIEWING_AGAIN],
                 AdminRole.DIVISION_MANAGER: [ApplicationStatus.TRANSFER_TO_DM, ApplicationStatus.DM_REVIEW],
                 AdminRole.HOD: [ApplicationStatus.TRANSFER_TO_HOD, ApplicationStatus.HOD_REVIEW],
                 AdminRole.SECRETARY_GENERAL: [ApplicationStatus.TRANSFER_TO_SG, ApplicationStatus.SG_REVIEW],
@@ -735,7 +735,7 @@ def get_workflow_info():
                     'can_view': [
                         ApplicationStatus.PENDING.value,
                         ApplicationStatus.FBO_REVIEW.value,
-                        ApplicationStatus.MISSING_DOCUMENTS.value,
+                        ApplicationStatus.REVIEWING_AGAIN.value,
                         ApplicationStatus.TRANSFER_TO_DM.value,
                         ApplicationStatus.DM_REVIEW.value,
                         ApplicationStatus.TRANSFER_TO_HOD.value,
@@ -750,7 +750,7 @@ def get_workflow_info():
                     'can_edit': [
                         ApplicationStatus.PENDING.value,
                         ApplicationStatus.FBO_REVIEW.value,
-                        ApplicationStatus.MISSING_DOCUMENTS.value
+                        ApplicationStatus.REVIEWING_AGAIN.value
                     ]
                 },
                 AdminRole.DIVISION_MANAGER.value: {
