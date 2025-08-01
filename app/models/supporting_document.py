@@ -10,7 +10,8 @@ class DocumentType(Enum):
     ANNUAL_ACTION_PLAN = "ANNUAL_ACTION_PLAN"
     PROOF_OF_PAYMENT = "PROOF_OF_PAYMENT"
     PARTNERSHIP_DOCUMENT = "PARTNERSHIP_DOCUMENT"
-
+    PASTOR_DOCUMENT = "PASTOR_DOCUMENT"
+    
 DOCUMENT_TYPE_INFO = {
     DocumentType.ORGANIZATION_COMMITTEE_NAMES_CVS: {
         'name': 'Names and CVs of Organization Committee',
@@ -39,6 +40,10 @@ DOCUMENT_TYPE_INFO = {
     DocumentType.PARTNERSHIP_DOCUMENT: {
         'name': 'Partnership Document',
         'required': False
+    },
+    DocumentType.PASTOR_DOCUMENT: {
+        'name': 'Pastor Document (CV, Ordination Letter, etc.)',
+        'required': True
     }
 }
 

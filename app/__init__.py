@@ -69,9 +69,11 @@ def create_app():
     from app.blueprints.certificates import bp as certificates_bp
     from app.blueprints.public import bp as public_bp
     from app.blueprints.reports import bp as reports_bp
+    from app.blueprints.provinceAndDistrict import bp as provinceAndDistrict_bp
     
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(application_bp, url_prefix='/api/applications')
+    app.register_blueprint(application_bp, url_prefix='/api/application')
+    app.register_blueprint(provinceAndDistrict_bp, url_prefix='/api/provinces')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(documents_bp, url_prefix='/api/documents')
     app.register_blueprint(notifications_bp, url_prefix='/api/notifications')
@@ -80,23 +82,114 @@ def create_app():
     app.register_blueprint(public_bp, url_prefix='/api/public')
     
     # Create default admin user
-    # @app.before_request
-    # def create_default_admin():
-    #     from app.models.admin import Admin
-    #     from app.utils.auth import hash_password
+    @app.before_request
+    def create_default_admin():
+        from app.models.admin import Admin
+        from app.utils.auth import hash_password
         
-    #     if not Admin.query.filter_by(email='admin@gmail.com').first():
-    #         admin = Admin(
-    #             email='admin@gmail.com',
-    #             password=hash_password('Admin123@'),
-    #             firstname='System',
-    #             lastname='Administrator',
-    #             phonenumber='+250780000000',
-    #             role='CEO',
-    #             gender='MALE',
-    #             enabled=True 
-    #         )
-    #         db.session.add(admin)
-    #         db.session.commit()
+        if not Admin.query.filter_by(email='ceo@gmail.com').first():
+            admin = Admin(
+                email='ceo@gmail.com',
+                password=hash_password('Mugisha12@'),
+                firstname='System',
+                lastname='Administrator',
+                phonenumber='+250780000000',
+                role='CEO',
+                gender='MALE',
+                enabled=True 
+            )
+            db.session.add(admin)
+            db.session.commit()
+
+        seed_rwanda_locations()
+    
+
+    def seed_rwanda_locations():
+        """Seed Rwanda provinces and districts data"""
+
+        from app.models.provinceAndDistrict import Province, District
+        
+        # Check if data already exists
+        if Province.query.first():
+            return
+        
+        # Rwanda provinces and districts data
+        rwanda_data = {
+            'Kigali City': {
+                'code': 'KC',
+                'districts': [
+                    {'name': 'Gasabo', 'code': 'GAS'},
+                    {'name': 'Kicukiro', 'code': 'KIC'},
+                    {'name': 'Nyarugenge', 'code': 'NYA'}
+                ]
+            },
+            'Northern Province': {
+                'code': 'NP',
+                'districts': [
+                    {'name': 'Burera', 'code': 'BUR'},
+                    {'name': 'Gakenke', 'code': 'GAK'},
+                    {'name': 'Gicumbi', 'code': 'GIC'},
+                    {'name': 'Musanze', 'code': 'MUS'},
+                    {'name': 'Rulindo', 'code': 'RUL'}
+                ]
+            },
+            'Southern Province': {
+                'code': 'SP',
+                'districts': [
+                    {'name': 'Gisagara', 'code': 'GIS'},
+                    {'name': 'Huye', 'code': 'HUY'},
+                    {'name': 'Kamonyi', 'code': 'KAM'},
+                    {'name': 'Muhanga', 'code': 'MUH'},
+                    {'name': 'Nyamagabe', 'code': 'NYM'},
+                    {'name': 'Nyanza', 'code': 'NYZ'},
+                    {'name': 'Nyaruguru', 'code': 'NYR'},
+                    {'name': 'Ruhango', 'code': 'RUH'}
+                ]
+            },
+            'Eastern Province': {
+                'code': 'EP',
+                'districts': [
+                    {'name': 'Bugesera', 'code': 'BUG'},
+                    {'name': 'Gatsibo', 'code': 'GAT'},
+                    {'name': 'Kayonza', 'code': 'KAY'},
+                    {'name': 'Kirehe', 'code': 'KIR'},
+                    {'name': 'Ngoma', 'code': 'NGO'},
+                    {'name': 'Nyagatare', 'code': 'NYG'},
+                    {'name': 'Rwamagana', 'code': 'RWA'}
+                ]
+            },
+            'Western Province': {
+                'code': 'WP',
+                'districts': [
+                    {'name': 'Karongi', 'code': 'KAR'},
+                    {'name': 'Ngororero', 'code': 'NGR'},
+                    {'name': 'Nyabihu', 'code': 'NYB'},
+                    {'name': 'Nyamasheke', 'code': 'NYS'},
+                    {'name': 'Rubavu', 'code': 'RUB'},
+                    {'name': 'Rusizi', 'code': 'RUS'},
+                    {'name': 'Rutsiro', 'code': 'RUT'}
+                ]
+            }
+        }
+        
+        # Create provinces and districts
+        for province_name, province_data in rwanda_data.items():
+            # Create province
+            province = Province(name=province_name, code=province_data['code'])
+            db.session.add(province)
+            db.session.flush()  # To get the province ID
+            
+            # Create districts for this province
+            for district_data in province_data['districts']:
+                district = District(
+                    name=district_data['name'],
+                    code=district_data['code'],
+                    province_id=province.id
+                )
+                db.session.add(district)
+        
+        db.session.commit()
+        print("Rwanda provinces and districts seeded successfully!")
+        
     
     return app

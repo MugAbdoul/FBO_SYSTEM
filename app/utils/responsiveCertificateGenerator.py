@@ -335,7 +335,7 @@ class ModernCertificateGenerator:
         details = [
             ("Organization:", application.organization_name, self.colors['primary']),
             ("Representative:", f"{application.applicant.title} {application.applicant.firstname} {application.applicant.lastname}", self.colors['text_primary']),
-            ("Address:", application.address, self.colors['text_primary']),
+            ("Address:", application.district.name, self.colors['text_primary']),
             ("Cluster:", getattr(application.cluster_information, 'cluster_of_intervention', 'General Religious Activities') if application.cluster_information else 'General Religious Activities', self.colors['accent'])
         ]
         
@@ -537,7 +537,7 @@ class ModernCertificateGenerator:
         canvas.setFont("Helvetica", self.font_sizes['micro'])
         
         security_lines = [
-            f"SECURITY: Digital certificate with ID: CERT-{application.certificate_number} | VERIFY: http://localhost:3000//verify/{application.certificate_number}",
+            f"SECURITY: Digital certificate with ID: CERT-{application.certificate_number} | VERIFY: http://localhost:3000/verify/{application.certificate_number}",
             f"LEGAL: Unauthorized reproduction prohibited | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')} | Rwanda Governance Board"
         ]
         

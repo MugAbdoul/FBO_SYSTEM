@@ -2,13 +2,12 @@ from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt
 from app import db, socketio
 from app import db
-from app.models.organization_application import OrganizationApplication
+from app.models.organization_application import ApplicationStatus, OrganizationApplication
 from app.models.supporting_document import SupportingDocument, DocumentType, DOCUMENT_TYPE_INFO
 from app.models.notification import Notification, NotificationType
 from app.utils.auth import get_current_user, applicant_required, admin_required
 from app.utils.validators import validate_file_upload
 from datetime import datetime
-import os
 import uuid
 from io import BytesIO
 
@@ -37,6 +36,9 @@ def upload_document():
             doc_type_enum = DocumentType(document_type)
         except ValueError:
             return jsonify({'error': 'Invalid document type'}), 400
+        
+            
+        application.status = ApplicationStatus.PENDING
         
         # Get uploaded file
         if 'file' not in request.files:
@@ -98,28 +100,11 @@ def upload_document():
         if not existing_doc:
             doc_count += 1
         
-        # Recalculate ML risk score
-        from app.ml.application_scorer import risk_scorer
-        application_data = {
-            'organization_name': application.organization_name,
-            'acronym': application.acronym,
-            'organization_phone': application.organization_phone,
-            'organization_email': application.organization_email,
-            'address': application.address,
-            'num_documents': doc_count,
-            'applicant': applicant.to_dict()
-        }
-        
-        ml_prediction = risk_scorer.predict_risk(application_data)
-        application.risk_score = float(ml_prediction['risk_score'])
-        application.ml_predictions = ml_prediction
-        
         db.session.commit()
         
         return jsonify({
             'message': 'Document uploaded successfully',
-            'document': document.to_dict(),
-            'ml_prediction': ml_prediction
+            'document': document.to_dict()
         }), 201
         
     except Exception as e:

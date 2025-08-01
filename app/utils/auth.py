@@ -31,19 +31,28 @@ def check_password(password, hashed):
 
 
 def get_current_user():
-    """Get current user from JWT token"""
-    verify_jwt_in_request()
-    user_id = get_identity(get_jwt_identity())['id']  # it's a string
-    claims = get_jwt()
-    user_type = claims.get("type")
-
-    logger.debug(f"[get_current_user] ID: {user_id}, Type: {user_type}")
-
-    if user_type == 'applicant':
-        return Applicant.query.get(int(user_id))
-    elif user_type == 'admin':
-        return Admin.query.get(int(user_id))
-    return None
+    try:
+        # Get the user ID from token identity (now it's a string)
+        user_id = get_jwt_identity()
+        
+        # Get additional claims
+        claims = get_jwt()
+        user_type = claims.get('type')
+        
+        # Convert string ID back to integer
+        if user_id and user_id.isdigit():
+            user_id = int(user_id)
+        
+        if user_type == 'applicant':
+            from app.models.applicant import Applicant
+            return Applicant.query.get(user_id)
+        elif user_type == 'admin':
+            from app.models.admin import Admin
+            return Admin.query.get(user_id)
+        else:
+            return None
+    except Exception as e:
+        return None
 
 
 def admin_required(roles=None):
@@ -52,7 +61,7 @@ def admin_required(roles=None):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             verify_jwt_in_request()
-            user_id = get_identity(get_jwt_identity())['id']
+            user_id = get_identity(get_jwt_identity())
             claims = get_jwt()
 
             logger.debug(f"[Admin Required] ID: {user_id}, Type: {claims.get('type')}")
@@ -77,7 +86,7 @@ def applicant_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         verify_jwt_in_request()
-        user_id = get_identity(get_jwt_identity())['id']
+        user_id = get_identity(get_jwt_identity())
         claims = get_jwt()      
 
 

@@ -4,11 +4,12 @@ from app import db, socketio
 from app.models.applicant import Applicant
 from app.models.admin import Admin, AdminRole
 from app.models.organization_application import OrganizationApplication, ApplicationStatus
+from app.models.applicationComment import ApplicationComment
+from app.models.provinceAndDistrict import Province, District
 from app.models.cluster_information import ClusterInformation
 from app.models.supporting_document import SupportingDocument, DocumentType, DOCUMENT_TYPE_INFO
 from app.models.notification import Notification, NotificationType
 from app.utils.auth import get_current_user, applicant_required, admin_required
-from app.ml.application_scorer import risk_scorer
 from datetime import datetime, timedelta
 import uuid
 
@@ -21,9 +22,8 @@ def create_application():
         applicant = get_current_user()
         data = request.get_json()
         
-        
         # Validate required fields
-        required_fields = ['organization_name', 'address', 'organization_email', 
+        required_fields = ['organization_name', 'district_id', 'organization_email', 
                           'organization_phone', 'cluster_of_intervention', 
                           'source_of_fund', 'description']
         
@@ -31,12 +31,17 @@ def create_application():
             if field not in data or not data[field]:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
         
+        # Validate district exists
+        district = District.query.get(data['district_id'])
+        if not district:
+            return jsonify({'error': 'Invalid district ID'}), 400
+        
         # Create application
         application = OrganizationApplication(
             applicant_id=applicant.id,
             organization_name=data['organization_name'].strip(),
             acronym=data.get('acronym', '').strip() if data.get('acronym') else None,
-            address=data['address'].strip(),
+            district_id=data['district_id'],
             organization_email=data['organization_email'].strip().lower(),
             organization_phone=data['organization_phone'].strip(),
             status=ApplicationStatus.PENDING
@@ -54,26 +59,6 @@ def create_application():
         )
         
         db.session.add(cluster_info)
-        
-        # Calculate ML risk score
-        application_data = {
-            'organization_name': application.organization_name,
-            'acronym': application.acronym,
-            'organization_phone': application.organization_phone,
-            'organization_email': application.organization_email,
-            'address': application.address,
-            'num_documents': 0,  # Will be updated when documents are uploaded
-            'applicant': applicant.to_dict()
-        }
-        
-        ml_prediction = risk_scorer.predict_risk(application_data)
-        application.risk_score = float(ml_prediction['risk_score'])
-        application.ml_predictions = ml_prediction
-    
-        print("++++++++++++++++++++++++++++++++")
-        print(ml_prediction['risk_score'])
-        print(ml_prediction)
-        print("++++++++++++++++++++++++++++++++")
         db.session.commit()
         
         # Create notification for FBO Officers
@@ -99,91 +84,67 @@ def create_application():
         
         return jsonify({
             'message': 'Application created successfully',
-            'application': application.to_dict(),
-            'ml_prediction': ml_prediction
+            'application': application.to_dict()
         }), 201
         
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': f'Failed to create application: {str(e)}'}), 500
 
-@bp.route('/', methods=['GET'])
-@jwt_required()
-def get_applications():
+@bp.route('/<int:application_id>/comments', methods=['POST'])
+@admin_required()
+def add_comment(application_id):
     try:
-        user = get_current_user()        
-        claims = get_jwt()      
-
-        if claims.get('type') == 'applicant':
-            # Applicant can only see their own applications
-            applications = OrganizationApplication.query.filter_by(applicant_id=user.id).all()
+        data = request.get_json()
+        content = data.get('content', '').strip()
         
-        elif claims.get('type') == 'admin':
-            # Admin sees applications based on their role and status
-            if user.role == AdminRole.FBO_OFFICER:
-                applications = OrganizationApplication.query.filter(
-                    OrganizationApplication.status.in_([
-                        ApplicationStatus.PENDING, 
-                        ApplicationStatus.UNDER_REVIEW,
-                        ApplicationStatus.MISSING_DOCUMENTS
-                    ])
-                ).all()
-            
-            elif user.role == AdminRole.DIVISION_MANAGER:
-                applications = OrganizationApplication.query.filter_by(
-                    status=ApplicationStatus.DRAFT
-                ).all()
-            
-            elif user.role == AdminRole.HOD:
-                applications = OrganizationApplication.query.filter_by(
-                    status=ApplicationStatus.DM_REVIEW
-                ).all()
-            
-            elif user.role == AdminRole.SECRETARY_GENERAL:
-                applications = OrganizationApplication.query.filter_by(
-                    status=ApplicationStatus.HOD_REVIEW
-                ).all()
-            
-            elif user.role == AdminRole.CEO:
-                applications = OrganizationApplication.query.filter_by(
-                    status=ApplicationStatus.SG_REVIEW
-                ).all()
-            
-            else:
-                applications = []
+        if not content:
+            return jsonify({'error': 'Comment content is required'}), 400
         
-        else:
-            return jsonify({'error': 'Invalid user type'}), 403
+        application = OrganizationApplication.query.get_or_404(application_id)
+        admin = get_current_user()
+        
+        comment = ApplicationComment(
+            content=content,
+            performed_by_id=admin.id,
+            application_id=application_id
+        )
+        
+        db.session.add(comment)
+        db.session.commit()
         
         return jsonify({
-            'applications': [app.to_dict() for app in applications]
-        })
+            'message': 'Comment added successfully',
+            'comment': comment.to_dict()
+        }), 201
         
     except Exception as e:
-        return jsonify({'error': f'Failed to get applications: {str(e)}'}), 500
+        db.session.rollback()
+        return jsonify({'error': f'Failed to add comment: {str(e)}'}), 500
 
-@bp.route('/<int:application_id>', methods=['GET'])
+@bp.route('/<int:application_id>/comments', methods=['GET'])
 @jwt_required()
-def get_application(application_id):
+def get_comments(application_id):
     try:
         user = get_current_user()
-        claims = get_jwt() 
+        claims = get_jwt()
         
         application = OrganizationApplication.query.get_or_404(application_id)
         
         # Check permissions
-        # if claims.get('type') == 'applicant' and application.applicant_id != user.id:
-        #     return jsonify({'error': 'Access denied'}), 403
+        if claims.get('type') == 'applicant' and application.applicant_id != user.id:
+            return jsonify({'error': 'Access denied'}), 403
         
-        # Include related data
-        app_data = application.to_dict()
-        app_data['cluster_information'] = application.cluster_information.to_dict() if application.cluster_information else None
-        app_data['supporting_documents'] = [doc.to_dict() for doc in application.supporting_documents]
+        comments = ApplicationComment.query.filter_by(
+            application_id=application_id
+        ).order_by(ApplicationComment.created_at.desc()).all()
         
-        return jsonify({'application': app_data})
+        return jsonify({
+            'comments': [comment.to_dict() for comment in comments]
+        })
         
     except Exception as e:
-        return jsonify({'error': f'Failed to get application: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to get comments: {str(e)}'}), 500
 
 @bp.route('/status', methods=['PUT'])
 @admin_required()
@@ -192,7 +153,7 @@ def update_application_status():
         data = request.get_json()
         application_id = data.get('application_id')
         new_status = data.get('status')
-        comments = data.get('comments', '')
+        comment_content = data.get('comment', '')
         
         if not application_id or not new_status:
             return jsonify({'error': 'Application ID and status required'}), 400
@@ -203,21 +164,25 @@ def update_application_status():
         # Validate status transition based on admin role
         valid_transitions = {
             AdminRole.FBO_OFFICER: {
-                ApplicationStatus.PENDING: [ApplicationStatus.UNDER_REVIEW, ApplicationStatus.MISSING_DOCUMENTS, ApplicationStatus.DRAFT],
-                ApplicationStatus.UNDER_REVIEW: [ApplicationStatus.MISSING_DOCUMENTS, ApplicationStatus.DRAFT],
-                ApplicationStatus.MISSING_DOCUMENTS: [ApplicationStatus.UNDER_REVIEW, ApplicationStatus.DRAFT]
+                ApplicationStatus.PENDING: [ApplicationStatus.FBO_REVIEW, ApplicationStatus.MISSING_DOCUMENTS],
+                ApplicationStatus.FBO_REVIEW: [ApplicationStatus.TRANSFER_TO_DM, ApplicationStatus.MISSING_DOCUMENTS],
+                ApplicationStatus.MISSING_DOCUMENTS: [ApplicationStatus.FBO_REVIEW]
             },
             AdminRole.DIVISION_MANAGER: {
-                ApplicationStatus.DRAFT: [ApplicationStatus.DM_REVIEW, ApplicationStatus.MISSING_DOCUMENTS]
+                ApplicationStatus.TRANSFER_TO_DM: [ApplicationStatus.DM_REVIEW],
+                ApplicationStatus.DM_REVIEW: [ApplicationStatus.TRANSFER_TO_HOD, ApplicationStatus.MISSING_DOCUMENTS]
             },
             AdminRole.HOD: {
-                ApplicationStatus.DM_REVIEW: [ApplicationStatus.HOD_REVIEW, ApplicationStatus.MISSING_DOCUMENTS]
+                ApplicationStatus.TRANSFER_TO_HOD: [ApplicationStatus.HOD_REVIEW],
+                ApplicationStatus.HOD_REVIEW: [ApplicationStatus.TRANSFER_TO_SG, ApplicationStatus.MISSING_DOCUMENTS]
             },
             AdminRole.SECRETARY_GENERAL: {
-                ApplicationStatus.HOD_REVIEW: [ApplicationStatus.SG_REVIEW, ApplicationStatus.REJECTED]
+                ApplicationStatus.TRANSFER_TO_SG: [ApplicationStatus.SG_REVIEW],
+                ApplicationStatus.SG_REVIEW: [ApplicationStatus.TRANSFER_TO_CEO, ApplicationStatus.REJECTED]
             },
             AdminRole.CEO: {
-                ApplicationStatus.SG_REVIEW: [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED]
+                ApplicationStatus.TRANSFER_TO_CEO: [ApplicationStatus.CEO_REVIEW],
+                ApplicationStatus.CEO_REVIEW: [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED]
             }
         }
         
@@ -241,13 +206,21 @@ def update_application_status():
         application.status = new_status_enum
         application.processed_by_id = admin.id
         application.last_modified = datetime.utcnow()
-        if comments:
-            application.comments = comments
         
-        # If approved, generate certificate number
+        # Add comment if provided
+        if comment_content.strip():
+            comment = ApplicationComment(
+                content=comment_content.strip(),
+                performed_by_id=admin.id,
+                application_id=application.id
+            )
+            db.session.add(comment)
+        
+        # If approved, generate certificate number and update status to certificate issued
         if new_status_enum == ApplicationStatus.APPROVED:
             application.certificate_number = f"RGB-{datetime.now().year}-{application.id:06d}"
             application.certificate_issued_at = datetime.utcnow()
+            application.status = ApplicationStatus.CERTIFICATE_ISSUED
         
         db.session.commit()
         
@@ -263,10 +236,10 @@ def update_application_status():
         
         # Create notification for next role if status moved forward
         next_role_map = {
-            ApplicationStatus.DRAFT: AdminRole.DIVISION_MANAGER,
-            ApplicationStatus.DM_REVIEW: AdminRole.HOD,
-            ApplicationStatus.HOD_REVIEW: AdminRole.SECRETARY_GENERAL,
-            ApplicationStatus.SG_REVIEW: AdminRole.CEO
+            ApplicationStatus.TRANSFER_TO_DM: AdminRole.DIVISION_MANAGER,
+            ApplicationStatus.TRANSFER_TO_HOD: AdminRole.HOD,
+            ApplicationStatus.TRANSFER_TO_SG: AdminRole.SECRETARY_GENERAL,
+            ApplicationStatus.TRANSFER_TO_CEO: AdminRole.CEO
         }
         
         if new_status_enum in next_role_map:
@@ -288,7 +261,7 @@ def update_application_status():
             'application_id': application.id,
             'old_status': old_status.value,
             'new_status': new_status_enum.value,
-            'comments': comments
+            'comment': comment_content
         }, room=f'applicant_{application.applicant_id}')
         
         return jsonify({
@@ -310,8 +283,8 @@ def get_document_requirements(application_id):
         user = get_current_user()
         claims = get_jwt() 
         
-        # if claims.get('type') == 'applicant' and application.applicant_id != user.id:
-        #     return jsonify({'error': 'Access denied'}), 403
+        if claims.get('type') == 'applicant' and application.applicant_id != user.id:
+            return jsonify({'error': 'Access denied'}), 403
         
         # Get all document types and their requirements
         requirements = []
@@ -337,62 +310,515 @@ def get_document_requirements(application_id):
     except Exception as e:
         return jsonify({'error': f'Failed to get document requirements: {str(e)}'}), 500
 
+
+
+@bp.route('/', methods=['GET'])
+@jwt_required()
+def get_applications():
+    try:
+        user = get_current_user()        
+        claims = get_jwt()      
+
+        if claims.get('type') == 'applicant':
+            # Applicant can only see their own applications
+            applications = OrganizationApplication.query.filter_by(applicant_id=user.id).all()
+            # Add canEdit field for applicants (they can edit only PENDING and MISSING_DOCUMENTS)
+            applications_data = []
+            for app in applications:
+                app_dict = app.to_dict()
+                app_dict['canEdit'] = app.status in [ApplicationStatus.PENDING, ApplicationStatus.MISSING_DOCUMENTS]
+                applications_data.append(app_dict)
+            
+            return jsonify({
+                'applications': applications_data
+            })
+        
+        elif claims.get('type') == 'admin':
+            # Define what statuses each admin role can see and edit
+            role_permissions = {
+                AdminRole.FBO_OFFICER: {
+                    'can_view': [
+                        ApplicationStatus.PENDING,
+                        ApplicationStatus.FBO_REVIEW,
+                        ApplicationStatus.MISSING_DOCUMENTS,
+                        ApplicationStatus.TRANSFER_TO_DM,
+                        ApplicationStatus.DM_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.PENDING,
+                        ApplicationStatus.FBO_REVIEW,
+                        ApplicationStatus.MISSING_DOCUMENTS
+                    ]
+                },
+                AdminRole.DIVISION_MANAGER: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_DM,
+                        ApplicationStatus.DM_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_DM,
+                        ApplicationStatus.DM_REVIEW
+                    ]
+                },
+                AdminRole.HOD: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW
+                    ]
+                },
+                AdminRole.SECRETARY_GENERAL: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW
+                    ]
+                },
+                AdminRole.CEO: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ]
+                }
+            }
+            
+            if user.role in role_permissions:
+                # Get applications that this admin role can view
+                viewable_statuses = role_permissions[user.role]['can_view']
+                editable_statuses = role_permissions[user.role]['can_edit']
+                
+                applications = OrganizationApplication.query.filter(
+                    OrganizationApplication.status.in_(viewable_statuses)
+                ).all()
+                
+                # Add canEdit field based on current status and admin permissions
+                applications_data = []
+                for app in applications:
+                    app_dict = app.to_dict()
+                    app_dict['canEdit'] = app.status in editable_statuses
+                    applications_data.append(app_dict)
+                
+                return jsonify({
+                    'applications': applications_data
+                })
+            else:
+                return jsonify({
+                    'applications': []
+                })
+        
+        else:
+            return jsonify({'error': 'Invalid user type'}), 403
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get applications: {str(e)}'}), 500
+
+@bp.route('/<int:application_id>', methods=['GET'])
+@jwt_required()
+def get_application(application_id):
+    try:
+        user = get_current_user()
+        claims = get_jwt() 
+        
+        application = OrganizationApplication.query.get_or_404(application_id)
+        
+        # Check if application is rejected (no one can access rejected applications)
+        if application.status == ApplicationStatus.REJECTED:
+            return jsonify({'error': 'Access denied - Application is rejected'}), 403
+        
+        # Check permissions
+        if claims.get('type') == 'applicant':
+            if application.applicant_id != user.id:
+                return jsonify({'error': 'Access denied'}), 403
+            # Applicant can edit only PENDING and MISSING_DOCUMENTS
+            can_edit = application.status in [ApplicationStatus.PENDING, ApplicationStatus.MISSING_DOCUMENTS]
+        
+        elif claims.get('type') == 'admin':
+            # Define what statuses each admin role can view and edit
+            role_permissions = {
+                AdminRole.FBO_OFFICER: {
+                    'can_view': [
+                        ApplicationStatus.PENDING,
+                        ApplicationStatus.FBO_REVIEW,
+                        ApplicationStatus.MISSING_DOCUMENTS,
+                        ApplicationStatus.TRANSFER_TO_DM,
+                        ApplicationStatus.DM_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.PENDING,
+                        ApplicationStatus.FBO_REVIEW,
+                        ApplicationStatus.MISSING_DOCUMENTS
+                    ]
+                },
+                AdminRole.DIVISION_MANAGER: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_DM,
+                        ApplicationStatus.DM_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_DM,
+                        ApplicationStatus.DM_REVIEW
+                    ]
+                },
+                AdminRole.HOD: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_HOD,
+                        ApplicationStatus.HOD_REVIEW
+                    ]
+                },
+                AdminRole.SECRETARY_GENERAL: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW,
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_SG,
+                        ApplicationStatus.SG_REVIEW
+                    ]
+                },
+                AdminRole.CEO: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_CEO,
+                        ApplicationStatus.CEO_REVIEW,
+                        ApplicationStatus.APPROVED,
+                        ApplicationStatus.CERTIFICATE_ISSUED
+                    ]
+                }
+            }
+            
+            if user.role not in role_permissions:
+                return jsonify({'error': 'Access denied'}), 403
+            
+            # Check if admin can view this application status
+            if application.status not in role_permissions[user.role]['can_view']:
+                return jsonify({'error': 'Access denied'}), 403
+            
+            # Check if admin can edit this application status
+            can_edit = application.status in role_permissions[user.role]['can_edit']
+        
+        else:
+            return jsonify({'error': 'Invalid user type'}), 403
+        
+        # Include related data
+        app_data = application.to_dict()
+        app_data['canEdit'] = can_edit
+        app_data['cluster_information'] = application.cluster_information.to_dict() if application.cluster_information else None
+        app_data['supporting_documents'] = [doc.to_dict() for doc in application.supporting_documents]
+        
+        return jsonify({'application': app_data})
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get application: {str(e)}'}), 500
+
 @bp.route('/stats', methods=['GET'])
 @admin_required()
 def get_application_stats():
     try:
         admin = get_current_user()
         
+        # Define what statuses each admin role can view for stats
+        role_view_permissions = {
+            AdminRole.FBO_OFFICER: [
+                ApplicationStatus.PENDING,
+                ApplicationStatus.FBO_REVIEW,
+                ApplicationStatus.MISSING_DOCUMENTS,
+                ApplicationStatus.TRANSFER_TO_DM,
+                ApplicationStatus.DM_REVIEW,
+                ApplicationStatus.TRANSFER_TO_HOD,
+                ApplicationStatus.HOD_REVIEW,
+                ApplicationStatus.TRANSFER_TO_SG,
+                ApplicationStatus.SG_REVIEW,
+                ApplicationStatus.TRANSFER_TO_CEO,
+                ApplicationStatus.CEO_REVIEW,
+                ApplicationStatus.APPROVED,
+                ApplicationStatus.CERTIFICATE_ISSUED
+            ],
+            AdminRole.DIVISION_MANAGER: [
+                ApplicationStatus.TRANSFER_TO_DM,
+                ApplicationStatus.DM_REVIEW,
+                ApplicationStatus.TRANSFER_TO_HOD,
+                ApplicationStatus.HOD_REVIEW,
+                ApplicationStatus.TRANSFER_TO_SG,
+                ApplicationStatus.SG_REVIEW,
+                ApplicationStatus.TRANSFER_TO_CEO,
+                ApplicationStatus.CEO_REVIEW,
+                ApplicationStatus.APPROVED,
+                ApplicationStatus.CERTIFICATE_ISSUED
+            ],
+            AdminRole.HOD: [
+                ApplicationStatus.TRANSFER_TO_HOD,
+                ApplicationStatus.HOD_REVIEW,
+                ApplicationStatus.TRANSFER_TO_SG,
+                ApplicationStatus.SG_REVIEW,
+                ApplicationStatus.TRANSFER_TO_CEO,
+                ApplicationStatus.CEO_REVIEW,
+                ApplicationStatus.APPROVED,
+                ApplicationStatus.CERTIFICATE_ISSUED
+            ],
+            AdminRole.SECRETARY_GENERAL: [
+                ApplicationStatus.TRANSFER_TO_SG,
+                ApplicationStatus.SG_REVIEW,
+                ApplicationStatus.TRANSFER_TO_CEO,
+                ApplicationStatus.CEO_REVIEW,
+                ApplicationStatus.APPROVED,
+                ApplicationStatus.CERTIFICATE_ISSUED
+            ],
+            AdminRole.CEO: [
+                ApplicationStatus.TRANSFER_TO_CEO,
+                ApplicationStatus.CEO_REVIEW,
+                ApplicationStatus.APPROVED,
+                ApplicationStatus.CERTIFICATE_ISSUED
+            ]
+        }
+        
         # Get statistics based on admin role
         stats = {}
         
-        if admin.role == AdminRole.CEO:
-            # CEO can see all stats
-            stats['total_applications'] = OrganizationApplication.query.count()
-            stats['pending_review'] = OrganizationApplication.query.filter_by(status=ApplicationStatus.SG_REVIEW).count()
-            stats['approved'] = OrganizationApplication.query.filter_by(status=ApplicationStatus.APPROVED).count()
-            stats['rejected'] = OrganizationApplication.query.filter_by(status=ApplicationStatus.REJECTED).count()
+        if admin.role in role_view_permissions:
+            viewable_statuses = role_view_permissions[admin.role]
             
-            # Applications by status
+            # Total applications this admin can see
+            stats['total_applications'] = OrganizationApplication.query.filter(
+                OrganizationApplication.status.in_(viewable_statuses)
+            ).count()
+            
+            # Applications by status (only for statuses this admin can see)
             status_counts = {}
-            for status in ApplicationStatus:
+            for status in viewable_statuses:
                 count = OrganizationApplication.query.filter_by(status=status).count()
                 status_counts[status.value] = count
             stats['by_status'] = status_counts
             
-            # Applications by month (last 12 months)
-            from sqlalchemy import func, extract
-            monthly_stats = db.session.query(
-                extract('month', OrganizationApplication.submitted_at).label('month'),
-                extract('year', OrganizationApplication.submitted_at).label('year'),
-                func.count(OrganizationApplication.id).label('count')
-            ).filter(
-                OrganizationApplication.submitted_at >= datetime.now() - timedelta(days=365)
-            ).group_by('year', 'month').all()
-            
-            stats['monthly'] = [
-                {
-                    'month': int(row.month),
-                    'year': int(row.year),
-                    'count': row.count
-                } for row in monthly_stats
-            ]
-            
-        else:
-            # Other roles see limited stats
-            role_status_map = {
-                AdminRole.FBO_OFFICER: [ApplicationStatus.PENDING, ApplicationStatus.UNDER_REVIEW, ApplicationStatus.MISSING_DOCUMENTS],
-                AdminRole.DIVISION_MANAGER: [ApplicationStatus.DRAFT],
-                AdminRole.HOD: [ApplicationStatus.DM_REVIEW],
-                AdminRole.SECRETARY_GENERAL: [ApplicationStatus.HOD_REVIEW]
+            # Role-specific stats
+            role_edit_permissions = {
+                AdminRole.FBO_OFFICER: [ApplicationStatus.PENDING, ApplicationStatus.FBO_REVIEW, ApplicationStatus.MISSING_DOCUMENTS],
+                AdminRole.DIVISION_MANAGER: [ApplicationStatus.TRANSFER_TO_DM, ApplicationStatus.DM_REVIEW],
+                AdminRole.HOD: [ApplicationStatus.TRANSFER_TO_HOD, ApplicationStatus.HOD_REVIEW],
+                AdminRole.SECRETARY_GENERAL: [ApplicationStatus.TRANSFER_TO_SG, ApplicationStatus.SG_REVIEW],
+                AdminRole.CEO: [ApplicationStatus.TRANSFER_TO_CEO, ApplicationStatus.CEO_REVIEW, ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]
             }
             
-            if admin.role in role_status_map:
-                stats['pending_review'] = OrganizationApplication.query.filter(
-                    OrganizationApplication.status.in_(role_status_map[admin.role])
+            if admin.role in role_edit_permissions:
+                stats['pending_my_action'] = OrganizationApplication.query.filter(
+                    OrganizationApplication.status.in_(role_edit_permissions[admin.role])
                 ).count()
+            
+            # For CEO, add comprehensive stats
+            if admin.role == AdminRole.CEO:
+                stats['approved'] = OrganizationApplication.query.filter_by(status=ApplicationStatus.APPROVED).count()
+                stats['certificate_issued'] = OrganizationApplication.query.filter_by(status=ApplicationStatus.CERTIFICATE_ISSUED).count()
+                
+                # Applications by district (for CEO only)
+                from sqlalchemy import func
+                district_stats = db.session.query(
+                    District.name,
+                    func.count(OrganizationApplication.id).label('count')
+                ).join(
+                    OrganizationApplication, District.id == OrganizationApplication.district_id
+                ).filter(
+                    OrganizationApplication.status.in_(viewable_statuses)
+                ).group_by(District.name).all()
+                
+                stats['by_district'] = [
+                    {'district': row.name, 'count': row.count} 
+                    for row in district_stats
+                ]
+                
+                # Applications by month (last 12 months)
+                from sqlalchemy import extract
+                monthly_stats = db.session.query(
+                    extract('month', OrganizationApplication.submitted_at).label('month'),
+                    extract('year', OrganizationApplication.submitted_at).label('year'),
+                    func.count(OrganizationApplication.id).label('count')
+                ).filter(
+                    OrganizationApplication.submitted_at >= datetime.now() - timedelta(days=365),
+                    OrganizationApplication.status.in_(viewable_statuses)
+                ).group_by('year', 'month').all()
+                
+                stats['monthly'] = [
+                    {
+                        'month': int(row.month),
+                        'year': int(row.year),
+                        'count': row.count
+                    } for row in monthly_stats
+                ]
         
         return jsonify({'stats': stats})
         
     except Exception as e:
         return jsonify({'error': f'Failed to get application stats: {str(e)}'}), 500
+
+@bp.route('/workflow', methods=['GET'])
+@jwt_required()
+def get_workflow_info():
+    """Get application workflow information"""
+    try:
+        workflow = {
+            'statuses': [status.value for status in ApplicationStatus],
+            'role_permissions': {
+                AdminRole.FBO_OFFICER.value: {
+                    'can_view': [
+                        ApplicationStatus.PENDING.value,
+                        ApplicationStatus.FBO_REVIEW.value,
+                        ApplicationStatus.MISSING_DOCUMENTS.value,
+                        ApplicationStatus.TRANSFER_TO_DM.value,
+                        ApplicationStatus.DM_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_HOD.value,
+                        ApplicationStatus.HOD_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_SG.value,
+                        ApplicationStatus.SG_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_CEO.value,
+                        ApplicationStatus.CEO_REVIEW.value,
+                        ApplicationStatus.APPROVED.value,
+                        ApplicationStatus.CERTIFICATE_ISSUED.value
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.PENDING.value,
+                        ApplicationStatus.FBO_REVIEW.value,
+                        ApplicationStatus.MISSING_DOCUMENTS.value
+                    ]
+                },
+                AdminRole.DIVISION_MANAGER.value: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_DM.value,
+                        ApplicationStatus.DM_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_HOD.value,
+                        ApplicationStatus.HOD_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_SG.value,
+                        ApplicationStatus.SG_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_CEO.value,
+                        ApplicationStatus.CEO_REVIEW.value,
+                        ApplicationStatus.APPROVED.value,
+                        ApplicationStatus.CERTIFICATE_ISSUED.value
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_DM.value,
+                        ApplicationStatus.DM_REVIEW.value
+                    ]
+                },
+                AdminRole.HOD.value: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_HOD.value,
+                        ApplicationStatus.HOD_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_SG.value,
+                        ApplicationStatus.SG_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_CEO.value,
+                        ApplicationStatus.CEO_REVIEW.value,
+                        ApplicationStatus.APPROVED.value,
+                        ApplicationStatus.CERTIFICATE_ISSUED.value
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_HOD.value,
+                        ApplicationStatus.HOD_REVIEW.value
+                    ]
+                },
+                AdminRole.SECRETARY_GENERAL.value: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_SG.value,
+                        ApplicationStatus.SG_REVIEW.value,
+                        ApplicationStatus.TRANSFER_TO_CEO.value,
+                        ApplicationStatus.CEO_REVIEW.value,
+                        ApplicationStatus.APPROVED.value,
+                        ApplicationStatus.CERTIFICATE_ISSUED.value
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_SG.value,
+                        ApplicationStatus.SG_REVIEW.value
+                    ]
+                },
+                AdminRole.CEO.value: {
+                    'can_view': [
+                        ApplicationStatus.TRANSFER_TO_CEO.value,
+                        ApplicationStatus.CEO_REVIEW.value,
+                        ApplicationStatus.APPROVED.value,
+                        ApplicationStatus.CERTIFICATE_ISSUED.value
+                    ],
+                    'can_edit': [
+                        ApplicationStatus.TRANSFER_TO_CEO.value,
+                        ApplicationStatus.CEO_REVIEW.value,
+                        ApplicationStatus.APPROVED.value,
+                        ApplicationStatus.CERTIFICATE_ISSUED.value
+                    ]
+                }
+            }
+        }
+        
+        return jsonify({'workflow': workflow})
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get workflow info: {str(e)}'}), 500

@@ -31,6 +31,7 @@ class Admin(db.Model):
     # Relationships
     processed_applications = db.relationship('OrganizationApplication', backref='processor', lazy=True)
     notifications = db.relationship('Notification', backref='admin', lazy=True, cascade='all, delete-orphan')
+    comments = db.relationship('ApplicationComment', backref='performed_by', lazy=True)
     
     def to_dict(self):
         return {

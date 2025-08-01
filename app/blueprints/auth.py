@@ -18,7 +18,7 @@ def register():
         # Validate required fields
         required_fields = ['email', 'password', 'firstname', 'lastname', 'nid_or_passport', 
                           'phonenumber', 'nationality', 'date_of_birth', 'gender', 
-                          'civil_status', 'title']
+                          'civil_status']
         
         for field in required_fields:
             if field not in data or not data[field]:
@@ -72,15 +72,16 @@ def register():
             date_of_birth=datetime.strptime(data['date_of_birth'], '%Y-%m-%d').date(),
             gender=gender,
             civil_status=civil_status,
-            title=data['title'].strip()
+            title='Mrs'
         )
         
         db.session.add(applicant)
         db.session.commit()
         
-        # Create access token
+        # ✅ FIXED - Create access token with string identity and additional claims
         access_token = create_access_token(
-            identity={'id': applicant.id, 'type': 'applicant'}
+            identity=str(applicant.id),
+            additional_claims={'type': 'applicant', 'user_id': applicant.id}
         )
         
         return jsonify({
@@ -104,8 +105,11 @@ def login():
         # Check if it's an applicant
         applicant = Applicant.query.filter_by(email=data['email'].lower()).first()
         if applicant and applicant.enabled and check_password(data['password'], applicant.password):
-            identity = json.dumps({'id': str(applicant.id), 'type': 'applicant'})
-            access_token = create_access_token(identity=identity, additional_claims={"type": "applicant"})
+            # ✅ FIXED - Use string identity with additional claims
+            access_token = create_access_token(
+                identity=str(applicant.id),
+                additional_claims={'type': 'applicant', 'user_id': applicant.id}
+            )
             return jsonify({
                 'access_token': access_token,
                 'user': applicant.to_dict(),
@@ -115,8 +119,11 @@ def login():
         # Check if it's an admin
         admin = Admin.query.filter_by(email=data['email'].lower()).first()
         if admin and admin.enabled and check_password(data['password'], admin.password):
-            identity = json.dumps({'id': str(admin.id), 'type': 'admin'})
-            access_token = create_access_token(identity=identity, additional_claims={"type": "admin"})
+            # ✅ FIXED - Use string identity with additional claims
+            access_token = create_access_token(
+                identity=str(admin.id),
+                additional_claims={'type': 'admin', 'user_id': admin.id}
+            )
             return jsonify({
                 'access_token': access_token,
                 'user': admin.to_dict(),
