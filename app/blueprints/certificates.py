@@ -90,7 +90,7 @@ def verify_certificate(certificate_number):
             'organization_name': application.organization_name,
             'applicant_name': f"{application.applicant.title} {application.applicant.firstname} {application.applicant.lastname}",
             'issued_date': application.certificate_issued_at.isoformat(),
-            'address': application.address,
+            'address': f"{application.district.province.name}/{application.district.name}",
             'cluster_of_intervention': application.cluster_information.cluster_of_intervention if application.cluster_information else None,
             'status': 'Active',
             'verification_timestamp': datetime.utcnow().isoformat()
