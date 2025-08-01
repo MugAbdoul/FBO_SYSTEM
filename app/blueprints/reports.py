@@ -53,9 +53,6 @@ def get_dashboard_statistics():
     # Monthly trends
     monthly_trends = get_monthly_trends()
     
-    # Risk distribution
-    risk_distribution = get_risk_distribution()
-    
     # Processing time by stage
     processing_time = get_processing_time()
     
@@ -65,18 +62,13 @@ def get_dashboard_statistics():
     # Applications by age group
     age_distribution = get_age_distribution()
     
-    # Application success rate by risk score
-    risk_success_rate = get_risk_success_rate()
-    
     return {
         'overview': overall_stats,
         'status_distribution': status_distribution,
         'monthly_trends': monthly_trends,
-        'risk_distribution': risk_distribution,
         'processing_time': processing_time,
         'nationality_distribution': nationality_distribution,
-        'age_distribution': age_distribution,
-        'risk_success_rate': risk_success_rate
+        'age_distribution': age_distribution
     }
 
 def get_overall_statistics():
@@ -92,7 +84,7 @@ def get_overall_statistics():
     
     pending_statuses = [
         ApplicationStatus.PENDING, 
-        ApplicationStatus.UNDER_REVIEW, 
+        ApplicationStatus.FBO_REVIEW, 
         ApplicationStatus.DM_REVIEW,
         ApplicationStatus.HOD_REVIEW,
         ApplicationStatus.SG_REVIEW,
@@ -142,26 +134,6 @@ def get_monthly_trends():
             'month': month.strftime('%b %Y'),
             'count': count
         } for month, count in monthly_data
-    ]
-
-def get_risk_distribution():
-    """Get risk score distribution"""
-    risk_data = db.session.query(
-        case(
-            (OrganizationApplication.risk_score < 40, 'Low Risk'),
-            (OrganizationApplication.risk_score < 70, 'Medium Risk'),
-            else_='High Risk'
-        ).label('risk_category'),
-        func.count(OrganizationApplication.id).label('count')
-    ).group_by('risk_category').all()
-    
-    return [
-        {
-            'name': category,
-            'value': count,
-            'color': '#10B981' if category == 'Low Risk' else 
-                     '#F59E0B' if category == 'Medium Risk' else '#EF4444'
-        } for category, count in risk_data
     ]
 
 def get_processing_time():
@@ -222,30 +194,6 @@ def get_age_distribution():
             'age_group': age_group,
             'count': count
         } for age_group, count in age_data
-    ]
-
-def get_risk_success_rate():
-    """Get application success rate by risk score range"""
-    risk_success_data = db.session.query(
-        case(
-            (OrganizationApplication.risk_score < 33, '0-33'),
-            (OrganizationApplication.risk_score < 66, '34-66'),
-            else_='67-100'
-        ).label('risk_range'),
-        func.count(case(
-            (OrganizationApplication.status == ApplicationStatus.APPROVED, 1),
-            (OrganizationApplication.status == ApplicationStatus.CERTIFICATE_ISSUED, 1),
-            else_=None
-        )).label('approved'),
-        func.count(OrganizationApplication.id).label('total')
-    ).group_by('risk_range').all()
-    
-    return [
-        {
-            'risk_range': risk_range,
-            'success_rate': (approved / total) * 100 if total > 0 else 0,
-            'total': total
-        } for risk_range, approved, total in risk_success_data
     ]
 
 # -----------------------------------------------------------------------------
@@ -313,7 +261,7 @@ def validate_report_parameters(data):
     report_format = data.get('format', 'pdf')
     
     # Validate report type
-    valid_report_types = ['summary', 'detailed', 'analytics', 'compliance', 'demographic']
+    valid_report_types = ['summary', 'detailed', 'analytics', 'demographic']
     if report_type not in valid_report_types:
         raise ValueError(f"Invalid report type. Must be one of: {', '.join(valid_report_types)}")
     
@@ -451,7 +399,6 @@ class PDFReportGenerator(ReportGenerator):
             'summary': "Application Summary Report",
             'detailed': "Detailed Application Report",
             'analytics': "Analytics Report",
-            'compliance': "Compliance Report",
             'demographic': "Demographic Report"
         }
         title = title_map.get(self.report_type, f"{self.report_type.title()} Report")
@@ -527,8 +474,7 @@ class CSVReportGenerator(ReportGenerator):
                     'ID': app.id,
                     'Organization Name': app.organization_name,
                     'Status': app.status.value,
-                    'Submitted Date': app.submitted_at.strftime('%Y-%m-%d'),
-                    'Risk Score': app.risk_score
+                    'Submitted Date': app.submitted_at.strftime('%Y-%m-%d')
                 } for app in self.applications
             ])
         elif self.report_type == 'detailed':
@@ -543,7 +489,6 @@ class CSVReportGenerator(ReportGenerator):
                     'Status': app.status.value,
                     'Submitted Date': app.submitted_at.strftime('%Y-%m-%d'),
                     'Last Modified': app.last_modified.strftime('%Y-%m-%d') if app.last_modified else '',
-                    'Risk Score': app.risk_score,
                     'Certificate Number': app.certificate_number or '',
                     'Certificate Issued': app.certificate_issued_at.strftime('%Y-%m-%d') if app.certificate_issued_at else '',
                     'Applicant Name': f"{app.applicant.firstname} {app.applicant.lastname}" if app.applicant else '',
@@ -557,36 +502,9 @@ class CSVReportGenerator(ReportGenerator):
             for app in self.applications:
                 status_counts[app.status.value] += 1
                 
-            # Create risk category counts
-            risk_categories = {
-                'Low Risk (0-39)': len([app for app in self.applications if app.risk_score < 40]),
-                'Medium Risk (40-69)': len([app for app in self.applications if 40 <= app.risk_score < 70]),
-                'High Risk (70-100)': len([app for app in self.applications if app.risk_score >= 70])
-            }
+            # Create a single DataFrame
+            df = pd.DataFrame([{'Status': k, 'Count': v} for k, v in status_counts.items()])
             
-            # Combine into a single DataFrame
-            df1 = pd.DataFrame([{'Status': k, 'Count': v} for k, v in status_counts.items()])
-            df2 = pd.DataFrame([{'Risk Category': k, 'Count': v} for k, v in risk_categories.items()])
-            
-            # Concatenate with a separator
-            df = pd.concat([
-                df1, 
-                pd.DataFrame([{'Status': 'RISK CATEGORIES BELOW', 'Count': ''}]),
-                df2.rename(columns={'Risk Category': 'Status'})
-            ])
-        elif self.report_type == 'compliance':
-            df = pd.DataFrame([
-                {
-                    'ID': app.id,
-                    'Organization Name': app.organization_name,
-                    'Risk Score': app.risk_score,
-                    'Risk Category': 'High Risk' if app.risk_score >= 70 else 
-                                   'Medium Risk' if app.risk_score >= 40 else 'Low Risk',
-                    'Status': app.status.value,
-                    'Submitted Date': app.submitted_at.strftime('%Y-%m-%d'),
-                    'Comments': app.comments or ''
-                } for app in self.applications
-            ])
         elif self.report_type == 'demographic':
             # For demographics, we need to extract unique applicants
             applicant_ids = set()
@@ -615,8 +533,7 @@ class CSVReportGenerator(ReportGenerator):
                     'ID': app.id,
                     'Organization Name': app.organization_name,
                     'Status': app.status.value,
-                    'Submitted Date': app.submitted_at.strftime('%Y-%m-%d'),
-                    'Risk Score': app.risk_score
+                    'Submitted Date': app.submitted_at.strftime('%Y-%m-%d')
                 } for app in self.applications
             ])
         
@@ -658,8 +575,6 @@ class ReportContentFactory:
             return DetailedReportContent()
         elif report_type == 'analytics':
             return AnalyticsReportContent()
-        elif report_type == 'compliance':
-            return ComplianceReportContent()
         elif report_type == 'demographic':
             return DemographicReportContent()
         else:
@@ -761,24 +676,6 @@ class ReportContent:
                 'font_color': '#0047AB',
                 'bottom': 1,
                 'bottom_color': '#0047AB'
-            }),
-            'high_risk': workbook.add_format({
-                'border': 1,
-                'bg_color': '#FFCCCC',
-                'align': 'center',
-                'valign': 'vcenter'
-            }),
-            'medium_risk': workbook.add_format({
-                'border': 1,
-                'bg_color': '#FFFFCC',
-                'align': 'center',
-                'valign': 'vcenter'
-            }),
-            'low_risk': workbook.add_format({
-                'border': 1,
-                'bg_color': '#CCFFCC',
-                'align': 'center',
-                'valign': 'vcenter'
             })
         }
         
@@ -827,21 +724,20 @@ class SummaryReportContent(ReportContent):
         # Take the 15 most recent
         recent_apps = sorted_apps[:15]
         
-        data = [['ID', 'Organization', 'Status', 'Submitted Date', 'Risk Score']]
+        data = [['ID', 'Organization', 'Status', 'Submitted Date']]
         
         for app in recent_apps:
             data.append([
                 str(app.id),
                 app.organization_name,
                 app.status.value.replace('_', ' ').title(),
-                app.submitted_at.strftime('%Y-%m-%d'),
-                f"{app.risk_score:.1f}"
+                app.submitted_at.strftime('%Y-%m-%d')
             ])
         
         if len(recent_apps) == 0:
-            data.append(['No applications found', '', '', '', ''])
+            data.append(['No applications found', '', '', ''])
         
-        table = Table(data, colWidths=[40, 200, 100, 100, 60])
+        table = Table(data, colWidths=[40, 200, 100, 100])
         table.setStyle(table_style)
         
         elements.append(table)
@@ -890,7 +786,7 @@ class SummaryReportContent(ReportContent):
         current_row += 1
         
         # Headers
-        columns = ['ID', 'Organization Name', 'Status', 'Submitted Date', 'Risk Score']
+        columns = ['ID', 'Organization Name', 'Status', 'Submitted Date']
         for col, header in enumerate(columns):
             worksheet.write(current_row, col, header, formats['header'])
         
@@ -906,18 +802,6 @@ class SummaryReportContent(ReportContent):
             worksheet.write(current_row, 1, app.organization_name, format_to_use)
             worksheet.write(current_row, 2, app.status.value.replace('_', ' ').title(), format_to_use)
             worksheet.write(current_row, 3, app.submitted_at.strftime('%Y-%m-%d'), format_to_use)
-            
-            # Color-code risk scores
-            risk_format = workbook.add_format({
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter',
-                'bg_color': '#E6E6FA' if i % 2 == 0 else 'white',
-                'font_color': 'green' if app.risk_score < 40 else 
-                             'orange' if app.risk_score < 70 else 'red'
-            })
-            
-            worksheet.write(current_row, 4, app.risk_score, risk_format)
             current_row += 1
         
         # Auto-adjust column widths
@@ -925,7 +809,6 @@ class SummaryReportContent(ReportContent):
         worksheet.set_column(1, 1, 40)
         worksheet.set_column(2, 2, 20)
         worksheet.set_column(3, 3, 15)
-        worksheet.set_column(4, 4, 12)
         
         # Add a chart for status distribution
         chart = workbook.add_chart({'type': 'pie'})
@@ -1003,7 +886,6 @@ class DetailedReportContent(ReportContent):
                 ['Address', app.address],
                 ['Submitted Date', app.submitted_at.strftime('%Y-%m-%d %H:%M')],
                 ['Last Modified', app.last_modified.strftime('%Y-%m-%d %H:%M') if app.last_modified else 'N/A'],
-                ['Risk Score', f"{app.risk_score:.1f}"],
                 ['Certificate Number', app.certificate_number or 'Not Issued'],
                 ['Certificate Issued Date', app.certificate_issued_at.strftime('%Y-%m-%d') if app.certificate_issued_at else 'N/A']
             ]
@@ -1101,7 +983,7 @@ class DetailedReportContent(ReportContent):
         row += 2
         columns = [
             'ID', 'Organization Name', 'Acronym', 'Email', 'Phone', 'Address',
-            'Status', 'Submitted Date', 'Last Modified', 'Risk Score',
+            'Status', 'Submitted Date', 'Last Modified',
             'Certificate Number', 'Certificate Issued Date',
             'Applicant Name', 'Applicant Email', 'Applicant Phone',
             'Nationality', 'Gender', 'Comments'
@@ -1118,11 +1000,6 @@ class DetailedReportContent(ReportContent):
         for i, app in enumerate(sorted_apps):
             format_to_use = formats['alt_row'] if i % 2 == 0 else formats['cell']
             
-            # Determine risk format
-            risk_format = formats['high_risk'] if app.risk_score >= 70 else \
-                         formats['medium_risk'] if app.risk_score >= 40 else \
-                         formats['low_risk']
-            
             worksheet.write(row, 0, app.id, format_to_use)
             worksheet.write(row, 1, app.organization_name, format_to_use)
             worksheet.write(row, 2, app.acronym or '', format_to_use)
@@ -1132,19 +1009,18 @@ class DetailedReportContent(ReportContent):
             worksheet.write(row, 6, app.status.value.replace('_', ' ').title(), format_to_use)
             worksheet.write(row, 7, app.submitted_at.strftime('%Y-%m-%d'), format_to_use)
             worksheet.write(row, 8, app.last_modified.strftime('%Y-%m-%d') if app.last_modified else '', format_to_use)
-            worksheet.write(row, 9, app.risk_score, risk_format)
-            worksheet.write(row, 10, app.certificate_number or '', format_to_use)
-            worksheet.write(row, 11, app.certificate_issued_at.strftime('%Y-%m-%d') if app.certificate_issued_at else '', format_to_use)
+            worksheet.write(row, 9, app.certificate_number or '', format_to_use)
+            worksheet.write(row, 10, app.certificate_issued_at.strftime('%Y-%m-%d') if app.certificate_issued_at else '', format_to_use)
             
             # Applicant info
             if app.applicant:
-                worksheet.write(row, 12, f"{app.applicant.firstname} {app.applicant.lastname}", format_to_use)
-                worksheet.write(row, 13, app.applicant.email, format_to_use)
-                worksheet.write(row, 14, app.applicant.phonenumber, format_to_use)
-                worksheet.write(row, 15, app.applicant.nationality, format_to_use)
-                worksheet.write(row, 16, app.applicant.gender.value if app.applicant.gender else '', format_to_use)
+                worksheet.write(row, 11, f"{app.applicant.firstname} {app.applicant.lastname}", format_to_use)
+                worksheet.write(row, 12, app.applicant.email, format_to_use)
+                worksheet.write(row, 13, app.applicant.phonenumber, format_to_use)
+                worksheet.write(row, 14, app.applicant.nationality, format_to_use)
+                worksheet.write(row, 15, app.applicant.gender.value if app.applicant.gender else '', format_to_use)
             else:
-                for col in range(12, 17):
+                for col in range(11, 16):
                     worksheet.write(row, col, '', format_to_use)
             
             # Use a special format for comments with text wrapping
@@ -1155,11 +1031,11 @@ class DetailedReportContent(ReportContent):
                 'bg_color': '#E6E6FA' if i % 2 == 0 else 'white'
             })
             
-            worksheet.write(row, 17, app.comments or '', comment_format)
+            worksheet.write(row, 16, app.comments or '', comment_format)
             row += 1
         
         # Auto-adjust column widths
-        column_widths = [10, 35, 15, 30, 15, 35, 20, 15, 15, 12, 20, 15, 25, 25, 15, 20, 15, 50]
+        column_widths = [10, 35, 15, 30, 15, 35, 20, 15, 15, 20, 15, 25, 25, 15, 20, 15, 50]
         for col, width in enumerate(column_widths):
             worksheet.set_column(col, col, width)
         
@@ -1191,7 +1067,6 @@ class DetailedReportContent(ReportContent):
                 ['Address', app.address],
                 ['Submitted Date', app.submitted_at.strftime('%Y-%m-%d %H:%M')],
                 ['Last Modified', app.last_modified.strftime('%Y-%m-%d %H:%M') if app.last_modified else 'N/A'],
-                ['Risk Score', f"{app.risk_score:.1f}"],
                 ['Certificate Number', app.certificate_number or 'Not Issued'],
                 ['Certificate Issued Date', app.certificate_issued_at.strftime('%Y-%m-%d') if app.certificate_issued_at else 'N/A']
             ]
@@ -1298,12 +1173,10 @@ class AnalyticsReportContent(ReportContent):
             return elements
         
         status_counts = defaultdict(int)
-        risk_scores = []
         submission_dates = []
         
         for app in applications:
             status_counts[app.status.value] += 1
-            risk_scores.append(app.risk_score)
             submission_dates.append(app.submitted_at)
         
         # Overall statistics
@@ -1312,9 +1185,6 @@ class AnalyticsReportContent(ReportContent):
         
         data = [['Metric', 'Value']]
         data.append(['Total Applications', total])
-        data.append(['Average Risk Score', f"{sum(risk_scores)/total:.2f}" if risk_scores else "N/A"])
-        data.append(['Highest Risk Score', f"{max(risk_scores):.2f}" if risk_scores else "N/A"])
-        data.append(['Lowest Risk Score', f"{min(risk_scores):.2f}" if risk_scores else "N/A"])
         
         table = Table(data, colWidths=[200, 250])
         table.setStyle(table_style)
@@ -1368,117 +1238,49 @@ class AnalyticsReportContent(ReportContent):
         elements.append(Image(img_buffer, width=400, height=300))
         elements.append(Spacer(1, 16))
         
-        # Risk score distribution
-        if risk_scores:
-            elements.append(Paragraph("Risk Score Distribution", subheading_style))
-            elements.append(Spacer(1, 6))
+        # Monthly trend analysis
+        elements.append(Paragraph("Monthly Application Trend", subheading_style))
+        elements.append(Spacer(1, 6))
+        
+        # Group by month
+        month_data = defaultdict(int)
+        for date in submission_dates:
+            month_key = date.strftime('%Y-%m')
+            month_data[month_key] += 1
+        
+        # Sort by month
+        sorted_months = sorted(month_data.items())
+        
+        if sorted_months:
+            # Create line chart of monthly trends
+            fig, ax = plt.subplots(figsize=(8, 5))
             
-            # Risk category counts
-            risk_categories = {
-                'Low Risk (0-39)': len([score for score in risk_scores if score < 40]),
-                'Medium Risk (40-69)': len([score for score in risk_scores if 40 <= score < 70]),
-                'High Risk (70-100)': len([score for score in risk_scores if score >= 70])
-            }
+            months = [datetime.strptime(m, '%Y-%m').strftime('%b %Y') for m, _ in sorted_months]
+            counts = [count for _, count in sorted_months]
             
-            data = [['Risk Category', 'Count', 'Percentage']]
-            for category, count in risk_categories.items():
-                data.append([
-                    category,
-                    count,
-                    f"{(count/total)*100:.1f}%"
-                ])
+            ax.plot(months, counts, marker='o', linestyle='-', linewidth=2, markersize=8, color='blue')
             
-            # Create table with risk-appropriate colors
-            table = Table(data, colWidths=[200, 125, 125])
-            risk_table_style = TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                # Add risk-specific colors
-                ('BACKGROUND', (0, 1), (-1, 1), colors.lightgreen),
-                ('BACKGROUND', (0, 2), (-1, 2), colors.lightyellow),
-                ('BACKGROUND', (0, 3), (-1, 3), colors.lightpink)
-            ])
-            
-            table.setStyle(risk_table_style)
-            elements.append(table)
-            elements.append(Spacer(1, 12))
-            
-            # Histogram of risk scores
-            fig, ax = plt.subplots(figsize=(7, 5))
-            
-            # Enhanced histogram with KDE
-            sns.histplot(risk_scores, bins=10, kde=True, color='skyblue', edgecolor='black', ax=ax)
-            ax.set_title('Risk Score Distribution', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Risk Score', fontsize=12)
-            ax.set_ylabel('Frequency', fontsize=12)
+            ax.set_title('Monthly Application Submissions', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Month', fontsize=12)
+            ax.set_ylabel('Number of Applications', fontsize=12)
             
             # Add grid lines and styling
             ax.grid(axis='y', linestyle='--', alpha=0.7)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             
-            # Add vertical lines for risk categories
-            ax.axvline(x=40, color='green', linestyle='--', label='Low/Medium Threshold')
-            ax.axvline(x=70, color='red', linestyle='--', label='Medium/High Threshold')
-            ax.legend()
+            # Add value labels
+            for i, v in enumerate(counts):
+                ax.text(i, v + 0.3, str(v), ha='center', fontweight='bold')
             
+            plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
             
             img_buffer = io.BytesIO()
             plt.savefig(img_buffer, format='png', dpi=300)
             img_buffer.seek(0)
             
-            elements.append(Image(img_buffer, width=400, height=300))
-            elements.append(Spacer(1, 16))
-            
-            # Monthly trend analysis
-            elements.append(Paragraph("Monthly Application Trend", subheading_style))
-            elements.append(Spacer(1, 6))
-            
-            # Group by month
-            month_data = defaultdict(int)
-            for date in submission_dates:
-                month_key = date.strftime('%Y-%m')
-                month_data[month_key] += 1
-            
-            # Sort by month
-            sorted_months = sorted(month_data.items())
-            
-            if sorted_months:
-                # Create line chart of monthly trends
-                fig, ax = plt.subplots(figsize=(8, 5))
-                
-                months = [datetime.strptime(m, '%Y-%m').strftime('%b %Y') for m, _ in sorted_months]
-                counts = [count for _, count in sorted_months]
-                
-                ax.plot(months, counts, marker='o', linestyle='-', linewidth=2, markersize=8, color='blue')
-                
-                ax.set_title('Monthly Application Submissions', fontsize=14, fontweight='bold')
-                ax.set_xlabel('Month', fontsize=12)
-                ax.set_ylabel('Number of Applications', fontsize=12)
-                
-                # Add grid lines and styling
-                ax.grid(axis='y', linestyle='--', alpha=0.7)
-                ax.spines['top'].set_visible(False)
-                ax.spines['right'].set_visible(False)
-                
-                # Add value labels
-                for i, v in enumerate(counts):
-                    ax.text(i, v + 0.3, str(v), ha='center', fontweight='bold')
-                
-                plt.xticks(rotation=45, ha='right')
-                plt.tight_layout()
-                
-                img_buffer = io.BytesIO()
-                plt.savefig(img_buffer, format='png', dpi=300)
-                img_buffer.seek(0)
-                
-                elements.append(Image(img_buffer, width=450, height=300))
+            elements.append(Image(img_buffer, width=450, height=300))
         
         return elements
     
@@ -1513,15 +1315,10 @@ class AnalyticsReportContent(ReportContent):
         
         # Calculate statistics
         total = len(applications)
-        risk_scores = [app.risk_score for app in applications]
-        avg_risk = sum(risk_scores) / total if risk_scores else 0
         
         # Write data with alternating row colors
         metrics = [
-            ('Total Applications', total),
-            ('Average Risk Score', f"{avg_risk:.2f}"),
-            ('Highest Risk Score', f"{max(risk_scores):.2f}" if risk_scores else 'N/A'),
-            ('Lowest Risk Score', f"{min(risk_scores):.2f}" if risk_scores else 'N/A')
+            ('Total Applications', total)
         ]
         
         row += 1
@@ -1556,34 +1353,6 @@ class AnalyticsReportContent(ReportContent):
             worksheet.write(row, 2, f"{(count/total)*100:.1f}%", format_to_use)
             row += 1
         status_row_end = row - 1
-        
-        # Risk score distribution
-        row += 2
-        worksheet.write(row, 0, 'Risk Score Distribution', formats['section'])
-        row += 1
-        
-        # Headers
-        worksheet.write(row, 0, 'Risk Category', formats['header'])
-        worksheet.write(row, 1, 'Count', formats['header'])
-        worksheet.write(row, 2, 'Percentage', formats['header'])
-        
-        # Calculate risk categories
-        risk_categories = {
-            'Low Risk (0-39)': len([app for app in applications if app.risk_score < 40]),
-            'Medium Risk (40-69)': len([app for app in applications if 40 <= app.risk_score < 70]),
-            'High Risk (70-100)': len([app for app in applications if app.risk_score >= 70])
-        }
-        
-        # Write data
-        row += 1
-        risk_row_start = row
-        risk_formats = [formats['low_risk'], formats['medium_risk'], formats['high_risk']]
-        for i, (category, count) in enumerate(risk_categories.items()):
-            worksheet.write(row, 0, category, risk_formats[i])
-            worksheet.write(row, 1, count, risk_formats[i])
-            worksheet.write(row, 2, f"{(count/total)*100:.1f}%", risk_formats[i])
-            row += 1
-        risk_row_end = row - 1
         
         # Monthly trend data
         row += 2
@@ -1628,22 +1397,6 @@ class AnalyticsReportContent(ReportContent):
         chart1.set_title({'name': 'Application Status Distribution'})
         chart1.set_style(10)
         
-        # 2. Risk Distribution Pie Chart
-        chart2 = workbook.add_chart({'type': 'pie'})
-        chart2.add_series({
-            'name': 'Risk Distribution',
-            'categories': f'=Analytics!$A${risk_row_start}:$A${risk_row_end}',
-            'values': f'=Analytics!$B${risk_row_start}:$B${risk_row_end}',
-            'data_labels': {'percentage': True, 'category': True, 'separator': '\n'},
-            'points': [
-                {'fill': {'color': '#CCFFCC'}},  # Low risk - light green
-                {'fill': {'color': '#FFFFCC'}},  # Medium risk - light yellow
-                {'fill': {'color': '#FFCCCC'}}   # High risk - light red
-            ]
-        })
-        chart2.set_title({'name': 'Risk Score Distribution'})
-        chart2.set_style(10)
-        
         # 3. Monthly Trend Line Chart
         if sorted_months:
             chart3 = workbook.add_chart({'type': 'line'})
@@ -1661,554 +1414,16 @@ class AnalyticsReportContent(ReportContent):
             
             # Insert charts
             worksheet.insert_chart('E5', chart1, {'x_scale': 1.5, 'y_scale': 1.5})
-            worksheet.insert_chart('E22', chart2, {'x_scale': 1.5, 'y_scale': 1.5})
-            worksheet.insert_chart('E39', chart3, {'x_scale': 1.5, 'y_scale': 1.5})
+            worksheet.insert_chart('E22', chart3, {'x_scale': 1.5, 'y_scale': 1.5})
         else:
-            # Insert just the first two charts if no monthly data
+            # Insert just the first chart if no monthly data
             worksheet.insert_chart('E5', chart1, {'x_scale': 1.5, 'y_scale': 1.5})
-            worksheet.insert_chart('E22', chart2, {'x_scale': 1.5, 'y_scale': 1.5})
         
         # Auto-adjust column widths
         worksheet.set_column('A:A', 25)
         worksheet.set_column('B:B', 15)
         worksheet.set_column('C:C', 15)
         worksheet.set_column('D:D', 15)
-        
-        # Add a Risk Metrics sheet
-        risk_sheet = workbook.add_worksheet('Risk Metrics')
-        
-        # Add title
-        risk_sheet.merge_range('A1:F1', 'Risk Score Analysis', formats['title'])
-        
-        # Headers for risk score data
-        row = 3
-        risk_sheet.write(row, 0, 'ID', formats['header'])
-        risk_sheet.write(row, 1, 'Organization', formats['header'])
-        risk_sheet.write(row, 2, 'Risk Score', formats['header'])
-        risk_sheet.write(row, 3, 'Risk Category', formats['header'])
-        risk_sheet.write(row, 4, 'Status', formats['header'])
-        
-        # Sort applications by risk score (highest first)
-        sorted_by_risk = sorted(applications, key=lambda x: x.risk_score, reverse=True)
-        
-        # Write data
-        row += 1
-        for i, app in enumerate(sorted_by_risk):
-            risk_category = 'High Risk' if app.risk_score >= 70 else 'Medium Risk' if app.risk_score >= 40 else 'Low Risk'
-            risk_format = formats['high_risk'] if app.risk_score >= 70 else formats['medium_risk'] if app.risk_score >= 40 else formats['low_risk']
-            
-            risk_sheet.write(row, 0, app.id, formats['cell'])
-            risk_sheet.write(row, 1, app.organization_name, formats['cell'])
-            risk_sheet.write(row, 2, app.risk_score, risk_format)
-            risk_sheet.write(row, 3, risk_category, risk_format)
-            risk_sheet.write(row, 4, app.status.value.replace('_', ' ').title(), formats['cell'])
-            row += 1
-        
-        # Add a histogram of risk scores
-        histogram_chart = workbook.add_chart({'type': 'column'})
-        
-        # Create risk score histogram data
-        risk_ranges = ['0-10', '11-20', '21-30', '31-40', '41-50', '51-60', '61-70', '71-80', '81-90', '91-100']
-        risk_bins = [0] * 10
-        
-        for app in applications:
-            bin_index = min(int(app.risk_score // 10), 9)  # Handle score of 100
-            risk_bins[bin_index] += 1
-        
-        # Write histogram data
-        histogram_row = row + 2
-        risk_sheet.write(histogram_row, 0, 'Risk Range', formats['header'])
-        risk_sheet.write(histogram_row, 1, 'Count', formats['header'])
-        
-        histogram_row += 1
-        histogram_start = histogram_row
-        for i, (range_label, count) in enumerate(zip(risk_ranges, risk_bins)):
-            risk_sheet.write(histogram_row, 0, range_label, formats['cell'])
-            risk_sheet.write(histogram_row, 1, count, formats['cell'])
-            histogram_row += 1
-        histogram_end = histogram_row - 1
-        
-        # Add histogram chart
-        histogram_chart.add_series({
-            'name': 'Risk Score Distribution',
-            'categories': f'=Risk Metrics!$A${histogram_start}:$A${histogram_end}',
-            'values': f'=Risk Metrics!$B${histogram_start}:$B${histogram_end}',
-            'data_labels': {'value': True},
-            'gradient': {'colors': ['#CCFFCC', '#FFCCCC']}
-        })
-        
-        histogram_chart.set_title({'name': 'Risk Score Distribution'})
-        histogram_chart.set_x_axis({'name': 'Risk Score Range'})
-        histogram_chart.set_y_axis({'name': 'Number of Applications'})
-        histogram_chart.set_style(42)
-        
-        risk_sheet.insert_chart('D3', histogram_chart, {'x_scale': 1.5, 'y_scale': 1.5})
-        
-        # Set column widths
-        risk_sheet.set_column('A:A', 10)
-        risk_sheet.set_column('B:B', 40)
-        risk_sheet.set_column('C:C', 15)
-        risk_sheet.set_column('D:D', 15)
-        risk_sheet.set_column('E:E', 20)
-
-# -----------------------------------------------------------------------------
-# Compliance Report Content
-# -----------------------------------------------------------------------------
-
-class ComplianceReportContent(ReportContent):
-    """Generates content for compliance reports"""
-    
-    def generate_pdf_content(self, applications):
-        elements = []
-        styles = getSampleStyleSheet()
-        
-        # Get standardized styles
-        heading_style = self._create_heading_style()
-        subheading_style = self._create_subheading_style()
-        
-        # Add header
-        elements.append(Paragraph("Compliance Report", heading_style))
-        elements.append(Spacer(1, 12))
-        
-        # Basic statistics
-        total = len(applications)
-        
-        if total == 0:
-            elements.append(Paragraph("No applications found in the selected period.", styles['Normal']))
-            return elements
-        
-        # Group by risk category
-        high_risk = [app for app in applications if app.risk_score >= 70]
-        medium_risk = [app for app in applications if 40 <= app.risk_score < 70]
-        low_risk = [app for app in applications if app.risk_score < 40]
-        
-        # Overall compliance statistics
-        elements.append(Paragraph("Risk Assessment Overview", subheading_style))
-        elements.append(Spacer(1, 6))
-        
-        # Create enhanced table style with risk-appropriate colors
-        risk_table_style = TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            # Risk-specific colors
-            ('BACKGROUND', (0, 1), (-1, 1), colors.lightpink),
-            ('BACKGROUND', (0, 2), (-1, 2), colors.lightyellow),
-            ('BACKGROUND', (0, 3), (-1, 3), colors.lightgreen)
-        ])
-        
-        data = [['Risk Category', 'Count', 'Percentage']]
-        data.append(['High Risk (70-100)', len(high_risk), f"{(len(high_risk)/total)*100:.1f}%"])
-        data.append(['Medium Risk (40-69)', len(medium_risk), f"{(len(medium_risk)/total)*100:.1f}%"])
-        data.append(['Low Risk (0-39)', len(low_risk), f"{(len(low_risk)/total)*100:.1f}%"])
-        
-        table = Table(data, colWidths=[200, 125, 125])
-        table.setStyle(risk_table_style)
-        
-        elements.append(table)
-        elements.append(Spacer(1, 16))
-        
-        # Risk distribution pie chart
-        fig, ax = plt.subplots(figsize=(7, 5))
-        
-        labels = ['High Risk', 'Medium Risk', 'Low Risk']
-        sizes = [len(high_risk), len(medium_risk), len(low_risk)]
-        colors = ['#FF9999', '#FFCC99', '#99CC99']
-        explode = (0.1, 0, 0)  # Explode high risk slice
-        
-        wedges, texts, autotexts = ax.pie(
-            sizes, 
-            explode=explode, 
-            labels=labels, 
-            colors=colors,
-            autopct='%1.1f%%',
-            shadow=True, 
-            startangle=90,
-            textprops={'fontsize': 12, 'fontweight': 'bold'}
-        )
-        
-        # Equal aspect ratio ensures that pie is drawn as a circle
-        ax.axis('equal')
-        ax.set_title('Risk Distribution', fontsize=14, fontweight='bold')
-        
-        # Set text color to ensure readability
-        for text in texts:
-            text.set_color('black')
-        for autotext in autotexts:
-            autotext.set_color('black')
-            
-        plt.tight_layout()
-        
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        
-        elements.append(Image(img_buffer, width=350, height=270))
-        elements.append(Spacer(1, 16))
-        
-        # High risk applications
-        if high_risk:
-            elements.append(Paragraph("High Risk Applications", subheading_style))
-            elements.append(Spacer(1, 6))
-            
-            high_risk_style = TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.lightpink),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
-            ])
-            
-            # Sort high risk applications by risk score (highest first)
-            sorted_high_risk = sorted(high_risk, key=lambda x: x.risk_score, reverse=True)
-            
-            data = [['ID', 'Organization', 'Risk Score', 'Status', 'Submitted Date']]
-            for app in sorted_high_risk[:10]:  # Limit to 10 for readability
-                data.append([
-                    str(app.id),
-                    app.organization_name,
-                    f"{app.risk_score:.1f}",
-                    app.status.value.replace('_', ' ').title(),
-                    app.submitted_at.strftime('%Y-%m-%d')
-                ])
-            
-            table = Table(data, colWidths=[40, 200, 70, 100, 90])
-            table.setStyle(high_risk_style)
-            
-            elements.append(table)
-            
-            # Add note if more than 10 high risk applications
-            if len(high_risk) > 10:
-                note_style = ParagraphStyle(
-                    'Note',
-                    parent=styles['Italic'],
-                    textColor=colors.darkgrey,
-                    fontSize=9,
-                    alignment=1  # Center
-                )
-                elements.append(Spacer(1, 6))
-                elements.append(Paragraph(f"Showing 10 of {len(high_risk)} high risk applications.", note_style))
-            
-            elements.append(Spacer(1, 16))
-        
-        # Success rate by risk category
-        elements.append(Paragraph("Approval Rate by Risk Category", subheading_style))
-        elements.append(Spacer(1, 6))
-        
-        high_approved = len([app for app in high_risk if app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]])
-        medium_approved = len([app for app in medium_risk if app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]])
-        low_approved = len([app for app in low_risk if app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]])
-        
-        data = [['Risk Category', 'Total', 'Approved', 'Approval Rate']]
-        data.append([
-            'High Risk (70-100)', 
-            len(high_risk), 
-            high_approved, 
-            f"{(high_approved/len(high_risk))*100:.1f}%" if high_risk else "N/A"
-        ])
-        data.append([
-            'Medium Risk (40-69)', 
-            len(medium_risk), 
-            medium_approved, 
-            f"{(medium_approved/len(medium_risk))*100:.1f}%" if medium_risk else "N/A"
-        ])
-        data.append([
-            'Low Risk (0-39)', 
-            len(low_risk), 
-            low_approved, 
-            f"{(low_approved/len(low_risk))*100:.1f}%" if low_risk else "N/A"
-        ])
-        
-        table = Table(data, colWidths=[150, 100, 100, 100])
-        table.setStyle(risk_table_style)
-        
-        elements.append(table)
-        elements.append(Spacer(1, 16))
-        
-        # Bar chart of approval rates
-        fig, ax = plt.subplots(figsize=(7, 5))
-        
-        categories = ['High Risk', 'Medium Risk', 'Low Risk']
-        approval_rates = [
-            (high_approved/len(high_risk))*100 if high_risk else 0,
-            (medium_approved/len(medium_risk))*100 if medium_risk else 0,
-            (low_approved/len(low_risk))*100 if low_risk else 0
-        ]
-        
-        bar_colors = ['#FF9999', '#FFCC99', '#99CC99']
-        
-        bars = ax.bar(categories, approval_rates, color=bar_colors)
-        ax.set_title('Approval Rate by Risk Category', fontsize=14, fontweight='bold')
-        ax.set_xlabel('Risk Category', fontsize=12)
-        ax.set_ylabel('Approval Rate (%)', fontsize=12)
-        ax.set_ylim(0, 100)
-        
-        # Add grid lines and styling
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        
-        # Add data labels on bars
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(
-                bar.get_x() + bar.get_width()/2., 
-                height + 2,
-                f'{height:.1f}%',
-                ha='center', 
-                va='bottom',
-                fontweight='bold'
-            )
-            
-        plt.tight_layout()
-        
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        
-        elements.append(Image(img_buffer, width=400, height=300))
-        
-        return elements
-    
-    def generate_excel_content(self, workbook, applications, start_date, end_date, status_filter):
-        """Generate compliance report in Excel format"""
-        worksheet = workbook.add_worksheet('Compliance')
-        
-        # Get standardized Excel formats
-        formats = self._create_excel_formats(workbook)
-        
-        # Add title and filters
-        worksheet.merge_range('A1:E1', 'Compliance Report', formats['title'])
-        worksheet.merge_range('A2:E2', f'Period: {start_date.strftime("%d %b %Y")} to {(end_date - timedelta(days=1)).strftime("%d %b %Y")}', formats['subtitle'])
-        
-        row = 2
-        if status_filter:
-            worksheet.merge_range('A3:E3', f'Status Filter: {status_filter}', formats['subtitle'])
-            row += 1
-        
-        if not applications:
-            worksheet.write(row + 2, 0, 'No applications found in the selected period.')
-            return
-        
-        # Risk assessment overview
-        row += 2
-        worksheet.write(row, 0, 'Risk Assessment Overview', formats['section'])
-        row += 1
-        
-        # Group by risk category
-        high_risk = [app for app in applications if app.risk_score >= 70]
-        medium_risk = [app for app in applications if 40 <= app.risk_score < 70]
-        low_risk = [app for app in applications if app.risk_score < 40]
-        total = len(applications)
-        
-        # Headers
-        worksheet.write(row, 0, 'Risk Category', formats['header'])
-        worksheet.write(row, 1, 'Count', formats['header'])
-        worksheet.write(row, 2, 'Percentage', formats['header'])
-        
-        # Write data with color coding
-        row += 1
-        risk_overview_start = row
-        
-        worksheet.write(row, 0, 'High Risk (70-100)', formats['high_risk'])
-        worksheet.write(row, 1, len(high_risk), formats['high_risk'])
-        worksheet.write(row, 2, f"{(len(high_risk)/total)*100:.1f}%" if total > 0 else "0.0%", formats['high_risk'])
-        row += 1
-        
-        worksheet.write(row, 0, 'Medium Risk (40-69)', formats['medium_risk'])
-        worksheet.write(row, 1, len(medium_risk), formats['medium_risk'])
-        worksheet.write(row, 2, f"{(len(medium_risk)/total)*100:.1f}%" if total > 0 else "0.0%", formats['medium_risk'])
-        row += 1
-        
-        worksheet.write(row, 0, 'Low Risk (0-39)', formats['low_risk'])
-        worksheet.write(row, 1, len(low_risk), formats['low_risk'])
-        worksheet.write(row, 2, f"{(len(low_risk)/total)*100:.1f}%" if total > 0 else "0.0%", formats['low_risk'])
-        row += 1
-        
-        risk_overview_end = row - 1
-        
-        # High risk applications detail
-        if high_risk:
-            row += 2
-            worksheet.write(row, 0, 'High Risk Applications', formats['section'])
-            row += 1
-            
-            # Headers
-            columns = ['ID', 'Organization Name', 'Risk Score', 'Status', 'Submitted Date', 'Comments']
-            for col, header in enumerate(columns):
-                worksheet.write(row, col, header, formats['header'])
-            
-            # Sort by risk score (highest first)
-            sorted_apps = sorted(high_risk, key=lambda x: x.risk_score, reverse=True)
-            
-            # Write data with high risk formatting
-            row += 1
-            for app in sorted_apps:
-                worksheet.write(row, 0, app.id, formats['high_risk'])
-                worksheet.write(row, 1, app.organization_name, formats['high_risk'])
-                worksheet.write(row, 2, app.risk_score, formats['high_risk'])
-                worksheet.write(row, 3, app.status.value.replace('_', ' ').title(), formats['high_risk'])
-                worksheet.write(row, 4, app.submitted_at.strftime('%Y-%m-%d'), formats['high_risk'])
-                
-                # Use text wrapping for comments
-                comment_format = workbook.add_format({
-                    'border': 1,
-                    'bg_color': '#FFCCCC',
-                    'text_wrap': True,
-                    'valign': 'top',
-                    'align': 'left'
-                })
-                
-                worksheet.write(row, 5, app.comments or '', comment_format)
-                row += 1
-        
-        # Approval rate by risk category
-        row += 2
-        worksheet.write(row, 0, 'Approval Rate by Risk Category', formats['section'])
-        row += 1
-        
-        # Headers
-        worksheet.write(row, 0, 'Risk Category', formats['header'])
-        worksheet.write(row, 1, 'Total', formats['header'])
-        worksheet.write(row, 2, 'Approved', formats['header'])
-        worksheet.write(row, 3, 'Approval Rate', formats['header'])
-        row += 1
-        
-        approval_data_start = row
-        
-        high_approved = len([app for app in high_risk if app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]])
-        medium_approved = len([app for app in medium_risk if app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]])
-        low_approved = len([app for app in low_risk if app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]])
-        
-        worksheet.write(row, 0, 'High Risk (70-100)', formats['high_risk'])
-        worksheet.write(row, 1, len(high_risk), formats['high_risk'])
-        worksheet.write(row, 2, high_approved, formats['high_risk'])
-        worksheet.write(row, 3, f"{(high_approved/len(high_risk))*100:.1f}%" if high_risk else "N/A", formats['high_risk'])
-        row += 1
-        
-        worksheet.write(row, 0, 'Medium Risk (40-69)', formats['medium_risk'])
-        worksheet.write(row, 1, len(medium_risk), formats['medium_risk'])
-        worksheet.write(row, 2, medium_approved, formats['medium_risk'])
-        worksheet.write(row, 3, f"{(medium_approved/len(medium_risk))*100:.1f}%" if medium_risk else "N/A", formats['medium_risk'])
-        row += 1
-        
-        worksheet.write(row, 0, 'Low Risk (0-39)', formats['low_risk'])
-        worksheet.write(row, 1, len(low_risk), formats['low_risk'])
-        worksheet.write(row, 2, low_approved, formats['low_risk'])
-        worksheet.write(row, 3, f"{(low_approved/len(low_risk))*100:.1f}%" if low_risk else "N/A", formats['low_risk'])
-        row += 1
-        
-        approval_data_end = row - 1
-        
-        # Add charts
-        
-        # 1. Risk Distribution Pie Chart
-        chart1 = workbook.add_chart({'type': 'pie'})
-        chart1.add_series({
-            'name': 'Risk Distribution',
-            'categories': f'=Compliance!$A${risk_overview_start}:$A${risk_overview_end}',
-            'values': f'=Compliance!$B${risk_overview_start}:$B${risk_overview_end}',
-            'data_labels': {'percentage': True, 'category': True, 'separator': '\n'},
-            'points': [
-                {'fill': {'color': '#FFCCCC'}},  # High risk - light red
-                {'fill': {'color': '#FFFFCC'}},  # Medium risk - light yellow
-                {'fill': {'color': '#CCFFCC'}}   # Low risk - light green
-            ]
-        })
-        chart1.set_title({'name': 'Risk Distribution'})
-        chart1.set_style(10)
-        
-        # 2. Approval Rate Bar Chart
-        chart2 = workbook.add_chart({'type': 'column'})
-        chart2.add_series({
-            'name': 'Approval Rate',
-            'categories': f'=Compliance!$A${approval_data_start}:$A${approval_data_end}',
-            'values': f'=Compliance!$D${approval_data_start}:$D${approval_data_end}',
-            'data_labels': {'value': True, 'num_format': '0.0%'},
-            'points': [
-                {'fill': {'color': '#FFCCCC'}},  # High risk - light red
-                {'fill': {'color': '#FFFFCC'}},  # Medium risk - light yellow
-                {'fill': {'color': '#CCFFCC'}}   # Low risk - light green
-            ]
-        })
-        chart2.set_title({'name': 'Approval Rate by Risk Category'})
-        chart2.set_y_axis({'name': 'Approval Rate', 'min': 0, 'max': 1, 'num_format': '0%'})
-        chart2.set_x_axis({'name': 'Risk Category'})
-        chart2.set_style(42)
-        
-        # Insert charts
-        worksheet.insert_chart('G5', chart1, {'x_scale': 1.5, 'y_scale': 1.5})
-        worksheet.insert_chart('G22', chart2, {'x_scale': 1.5, 'y_scale': 1.5})
-        
-        # Auto-adjust column widths
-        worksheet.set_column('A:A', 25)
-        worksheet.set_column('B:B', 15)
-        worksheet.set_column('C:C', 15)
-        worksheet.set_column('D:D', 15)
-        worksheet.set_column('E:E', 15)
-        worksheet.set_column('F:F', 40)
-        
-        # Add Risk Analysis Detail sheet
-        risk_sheet = workbook.add_worksheet('Risk Analysis')
-        
-        # Add title
-        risk_sheet.merge_range('A1:F1', 'Risk Analysis Detail', formats['title'])
-        
-        # Add all applications with risk score details
-        row = 3
-        risk_sheet.write(row, 0, 'All Applications by Risk Score', formats['section'])
-        row += 1
-        
-        # Headers
-        columns = ['ID', 'Organization Name', 'Risk Score', 'Risk Category', 'Status', 'Approval']
-        for col, header in enumerate(columns):
-            risk_sheet.write(row, col, header, formats['header'])
-        
-        # Sort all applications by risk score (highest first)
-        sorted_by_risk = sorted(applications, key=lambda x: x.risk_score, reverse=True)
-        
-        # Write data
-        row += 1
-        for app in sorted_by_risk:
-            # Determine risk category and format
-            risk_category = 'High Risk' if app.risk_score >= 70 else 'Medium Risk' if app.risk_score >= 40 else 'Low Risk'
-            risk_format = formats['high_risk'] if app.risk_score >= 70 else formats['medium_risk'] if app.risk_score >= 40 else formats['low_risk']
-            
-            # Determine if approved
-            is_approved = app.status in [ApplicationStatus.APPROVED, ApplicationStatus.CERTIFICATE_ISSUED]
-            approval_text = 'Approved' if is_approved else 'Not Approved'
-            
-            risk_sheet.write(row, 0, app.id, formats['cell'])
-            risk_sheet.write(row, 1, app.organization_name, formats['cell'])
-            risk_sheet.write(row, 2, app.risk_score, risk_format)
-            risk_sheet.write(row, 3, risk_category, risk_format)
-            risk_sheet.write(row, 4, app.status.value.replace('_', ' ').title(), formats['cell'])
-            
-            # Format approval with color
-            approval_format = workbook.add_format({
-                'border': 1,
-                'align': 'center',
-                'valign': 'vcenter',
-                'bg_color': '#CCFFCC' if is_approved else '#FFCCCC'
-            })
-            
-            risk_sheet.write(row, 5, approval_text, approval_format)
-            row += 1
-        
-        # Set column widths for risk analysis sheet
-        risk_sheet.set_column('A:A', 10)
-        risk_sheet.set_column('B:B', 40)
-        risk_sheet.set_column('C:C', 12)
-        risk_sheet.set_column('D:D', 15)
-        risk_sheet.set_column('E:E', 20)
-        risk_sheet.set_column('F:F', 15)
 
 # -----------------------------------------------------------------------------
 # Demographic Report Content

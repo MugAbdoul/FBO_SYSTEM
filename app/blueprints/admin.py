@@ -303,19 +303,6 @@ def get_dashboard_stats():
             
             stats['monthly'] = list(reversed(monthly_stats))
             
-            # Risk distribution
-            high_risk = OrganizationApplication.query.filter(OrganizationApplication.risk_score > 70).count()
-            medium_risk = OrganizationApplication.query.filter(
-                and_(OrganizationApplication.risk_score > 40, OrganizationApplication.risk_score <= 70)
-            ).count()
-            low_risk = OrganizationApplication.query.filter(OrganizationApplication.risk_score <= 40).count()
-            
-            stats['risk_distribution'] = {
-                'high': high_risk,
-                'medium': medium_risk,
-                'low': low_risk
-            }
-            
             # Processing time statistics
             avg_processing_time = db.session.query(
                 func.avg(
@@ -352,8 +339,7 @@ def get_dashboard_stats():
                 'id': app.id,
                 'organization_name': app.organization_name,
                 'status': app.status.value,
-                'submitted_at': app.submitted_at.isoformat(),
-                'risk_score': app.risk_score
+                'submitted_at': app.submitted_at.isoformat()
             } for app in recent_applications
         ]
         
@@ -424,13 +410,13 @@ def generate_csv_report(applications, report_type, start_date, end_date):
     if report_type == 'detailed':
         headers = [
             'Application ID', 'Organization Name', 'Acronym', 'Applicant Name', 
-            'Email', 'Phone', 'Address', 'Status', 'Risk Score', 'Submitted At',
+            'Email', 'Phone', 'Address', 'Status', 'Submitted At',
             'Last Modified', 'Certificate Number', 'Cluster of Intervention'
         ]
     else:
         headers = [
             'Application ID', 'Organization Name', 'Applicant Name', 
-            'Status', 'Risk Score', 'Submitted At'
+            'Status', 'Submitted At'
         ]
     
     writer.writerow(headers)
@@ -447,7 +433,6 @@ def generate_csv_report(applications, report_type, start_date, end_date):
                 app.organization_phone,
                 app.address,
                 app.status.value,
-                f"{app.risk_score:.1f}" if app.risk_score else '0',
                 app.submitted_at.strftime('%Y-%m-%d %H:%M:%S'),
                 app.last_modified.strftime('%Y-%m-%d %H:%M:%S'),
                 app.certificate_number or '',
@@ -459,7 +444,6 @@ def generate_csv_report(applications, report_type, start_date, end_date):
                 app.organization_name,
                 f"{app.applicant.firstname} {app.applicant.lastname}" if app.applicant else '',
                 app.status.value,
-                f"{app.risk_score:.1f}" if app.risk_score else '0',
                 app.submitted_at.strftime('%Y-%m-%d')
             ]
         writer.writerow(row)
@@ -483,13 +467,13 @@ def generate_excel_report(applications, report_type, start_date, end_date):
     if report_type == 'detailed':
         headers = [
             'Application ID', 'Organization Name', 'Acronym', 'Applicant Name', 
-            'Email', 'Phone', 'Address', 'Status', 'Risk Score', 'Submitted At',
+            'Email', 'Phone', 'Address', 'Status', 'Submitted At',
             'Last Modified', 'Certificate Number', 'Cluster of Intervention'
         ]
     else:
         headers = [
             'Application ID', 'Organization Name', 'Applicant Name', 
-            'Status', 'Risk Score', 'Submitted At'
+            'Status', 'Submitted At'
         ]
     
     # Write headers
@@ -510,7 +494,6 @@ def generate_excel_report(applications, report_type, start_date, end_date):
                 app.organization_phone,
                 app.address,
                 app.status.value,
-                app.risk_score if app.risk_score else 0,
                 app.submitted_at,
                 app.last_modified,
                 app.certificate_number or '',
@@ -522,7 +505,6 @@ def generate_excel_report(applications, report_type, start_date, end_date):
                 app.organization_name,
                 f"{app.applicant.firstname} {app.applicant.lastname}" if app.applicant else '',
                 app.status.value,
-                app.risk_score if app.risk_score else 0,
                 app.submitted_at
             ]
         
@@ -565,19 +547,10 @@ def generate_pdf_report(applications, report_type, start_date, end_date, admin):
     y_pos = height - 190
     if applications:
         status_counts = {}
-        risk_counts = {'High': 0, 'Medium': 0, 'Low': 0}
         
         for app in applications:
             status = app.status.value
             status_counts[status] = status_counts.get(status, 0) + 1
-            
-            if app.risk_score:
-                if app.risk_score > 70:
-                    risk_counts['High'] += 1
-                elif app.risk_score > 40:
-                    risk_counts['Medium'] += 1
-                else:
-                    risk_counts['Low'] += 1
         
         p.setFont("Helvetica-Bold", 12)
         p.drawString(50, y_pos, "Summary Statistics:")
@@ -589,13 +562,6 @@ def generate_pdf_report(applications, report_type, start_date, end_date, admin):
         for status, count in status_counts.items():
             p.drawString(70, y_pos, f"• {status}: {count}")
             y_pos -= 12
-        
-        y_pos -= 10
-        p.drawString(50, y_pos, "By Risk Level:")
-        y_pos -= 15
-        for risk, count in risk_counts.items():
-            p.drawString(70, y_pos, f"• {risk} Risk: {count}")
-            y_pos -= 12
     
     # Applications list (summary)
     y_pos -= 30
@@ -604,8 +570,8 @@ def generate_pdf_report(applications, report_type, start_date, end_date, admin):
     y_pos -= 20
     
     p.setFont("Helvetica", 8)
-    headers = ["ID", "Organization", "Applicant", "Status", "Risk", "Submitted"]
-    col_widths = [40, 120, 100, 80, 50, 80]
+    headers = ["ID", "Organization", "Applicant", "Status", "Submitted"]
+    col_widths = [40, 150, 120, 80, 80]
     x_positions = [50]
     for width in col_widths[:-1]:
         x_positions.append(x_positions[-1] + width)
@@ -623,10 +589,9 @@ def generate_pdf_report(applications, report_type, start_date, end_date, admin):
         
         data = [
             str(app.id),
-            app.organization_name[:15] + "..." if len(app.organization_name) > 15 else app.organization_name,
+            app.organization_name[:20] + "..." if len(app.organization_name) > 20 else app.organization_name,
             f"{app.applicant.firstname} {app.applicant.lastname}"[:15] if app.applicant else "",
             app.status.value[:10],
-            f"{app.risk_score:.1f}" if app.risk_score else "0",
             app.submitted_at.strftime('%m/%d/%Y')
         ]
         
@@ -784,26 +749,16 @@ def get_analytics_trends():
             ).all()
             
             status_breakdown = {}
-            risk_breakdown = {'high': 0, 'medium': 0, 'low': 0}
             
             for app in applications:
                 status = app.status.value
                 status_breakdown[status] = status_breakdown.get(status, 0) + 1
-                
-                if app.risk_score:
-                    if app.risk_score > 70:
-                        risk_breakdown['high'] += 1
-                    elif app.risk_score > 40:
-                        risk_breakdown['medium'] += 1
-                    else:
-                        risk_breakdown['low'] += 1
             
             monthly_data.append({
                 'month': date.month,
                 'year': date.year,
                 'total': len(applications),
-                'status_breakdown': status_breakdown,
-                'risk_breakdown': risk_breakdown
+                'status_breakdown': status_breakdown
             })
         
         trends['monthly'] = list(reversed(monthly_data))
@@ -820,8 +775,7 @@ def get_analytics_trends():
                 processing_times.append({
                     'application_id': app.id,
                     'days': days,
-                    'status': app.status.value,
-                    'risk_score': app.risk_score
+                    'status': app.status.value
                 })
         
         if processing_times:
@@ -831,26 +785,6 @@ def get_analytics_trends():
         else:
             trends['avg_processing_time'] = 0
             trends['processing_times'] = []
-        
-        # Risk analysis
-        all_apps = OrganizationApplication.query.all()
-        risk_analysis = {
-            'total_applications': len(all_apps),
-            'high_risk_count': len([app for app in all_apps if app.risk_score and app.risk_score > 70]),
-            'medium_risk_count': len([app for app in all_apps if app.risk_score and 40 < app.risk_score <= 70]),
-            'low_risk_count': len([app for app in all_apps if app.risk_score and app.risk_score <= 40]),
-            'risk_vs_outcome': []
-        }
-        
-        # Analyze risk score vs actual outcomes
-        for app in all_apps:
-            if app.risk_score and app.status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED]:
-                risk_analysis['risk_vs_outcome'].append({
-                    'risk_score': app.risk_score,
-                    'approved': app.status == ApplicationStatus.APPROVED
-                })
-        
-        trends['risk_analysis'] = risk_analysis
         
         return jsonify({'trends': trends})
         
@@ -888,7 +822,6 @@ def get_audit_logs():
                 'timestamp': app.last_modified.isoformat(),
                 'details': {
                     'status': app.status.value,
-                    'risk_score': app.risk_score,
                     'comments': app.comments
                 }
             })
