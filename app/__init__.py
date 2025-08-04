@@ -6,6 +6,9 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
 from dotenv import load_dotenv
 import os
+from flask_mail import Mail
+
+mail = Mail()
 
 load_dotenv()
 
@@ -47,6 +50,15 @@ def create_app():
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
     
+    
+     # Email configuration
+    app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
+    app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
+    app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() in ['true', 'on', '1']
+    app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME', 'nphilbert152@gmail.com')
+    app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', 'akcm feqo cgia elka')
+    app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER', 'nphilbert152@gmail.com')
+    
     CORS(app, resources={r"/*": {"origins": "*"}}, methods=["GET", "DELETE","POST", "PUT", "PATCH","OPTIONS"], allow_headers=["Content-Type", "Authorization"], supports_credentials=True)
     app.config['CORS_HEADERS'] = 'Content-Type'
     app.url_map.strict_slashes = False
@@ -58,6 +70,7 @@ def create_app():
     jwt.init_app(app)
     # CORS(app)
     socketio.init_app(app)
+    mail.init_app(app)
 
 
     # Register blueprints

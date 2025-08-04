@@ -822,7 +822,8 @@ def get_audit_logs():
                 'timestamp': app.last_modified.isoformat(),
                 'details': {
                     'status': app.status.value,
-                    'comments': app.comments
+                    'comments': [comment.to_dict() for comment in app.comments]
+
                 }
             })
         
@@ -837,4 +838,5 @@ def get_audit_logs():
         })
         
     except Exception as e:
+        print(e)
         return jsonify({'error': f'Failed to get audit logs: {str(e)}'}), 500

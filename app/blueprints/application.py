@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, current_app, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from app import db, socketio
 from app.models.applicant import Applicant
@@ -12,6 +12,8 @@ from app.models.notification import Notification, NotificationType
 from app.utils.auth import get_current_user, applicant_required, admin_required
 from datetime import datetime, timedelta
 import uuid
+
+from app.utils.email_service import send_email
 
 bp = Blueprint('application', __name__)
 
@@ -148,14 +150,6 @@ def update_application(application_id):
         # Update last modified timestamp
         application.last_modified = datetime.utcnow()
         
-        # Add a comment to log the update
-        comment = ApplicationComment(
-            content=f"Application updated by applicant in response to review feedback.",
-            performed_by_id=applicant.id,
-            application_id=application.id
-        )
-        db.session.add(comment)
-        
         # Create notification for FBO officers (if status is REVIEWING_AGAIN)
         if application.status == ApplicationStatus.REVIEWING_AGAIN:
             fbo_officers = Admin.query.filter_by(role=AdminRole.FBO_OFFICER, enabled=True).all()
@@ -250,6 +244,135 @@ def get_comments(application_id):
     except Exception as e:
         return jsonify({'error': f'Failed to get comments: {str(e)}'}), 500
 
+# @bp.route('/status', methods=['PUT'])
+# @admin_required()
+# def update_application_status():
+#     try:
+#         data = request.get_json()
+#         application_id = data.get('application_id')
+#         new_status = data.get('status')
+#         comment_content = data.get('comment', '')
+        
+#         if not application_id or not new_status:
+#             return jsonify({'error': 'Application ID and status required'}), 400
+        
+#         application = OrganizationApplication.query.get_or_404(application_id)
+#         admin = get_current_user()
+        
+#         # Validate status transition based on admin role
+#         valid_transitions = {
+#             AdminRole.FBO_OFFICER: {
+#                 ApplicationStatus.PENDING: [ApplicationStatus.FBO_REVIEW, ApplicationStatus.REVIEWING_AGAIN],
+#                 ApplicationStatus.FBO_REVIEW: [ApplicationStatus.TRANSFER_TO_DM, ApplicationStatus.REVIEWING_AGAIN],
+#                 ApplicationStatus.REVIEWING_AGAIN: [ApplicationStatus.FBO_REVIEW]
+#             },
+#             AdminRole.DIVISION_MANAGER: {
+#                 ApplicationStatus.TRANSFER_TO_DM: [ApplicationStatus.DM_REVIEW],
+#                 ApplicationStatus.DM_REVIEW: [ApplicationStatus.TRANSFER_TO_HOD, ApplicationStatus.REVIEWING_AGAIN]
+#             },
+#             AdminRole.HOD: {
+#                 ApplicationStatus.TRANSFER_TO_HOD: [ApplicationStatus.HOD_REVIEW],
+#                 ApplicationStatus.HOD_REVIEW: [ApplicationStatus.TRANSFER_TO_SG, ApplicationStatus.REVIEWING_AGAIN]
+#             },
+#             AdminRole.SECRETARY_GENERAL: {
+#                 ApplicationStatus.TRANSFER_TO_SG: [ApplicationStatus.SG_REVIEW],
+#                 ApplicationStatus.SG_REVIEW: [ApplicationStatus.TRANSFER_TO_CEO, ApplicationStatus.REJECTED, ApplicationStatus.REVIEWING_AGAIN]
+#             },
+#             AdminRole.CEO: {
+#                 ApplicationStatus.TRANSFER_TO_CEO: [ApplicationStatus.CEO_REVIEW],
+#                 ApplicationStatus.CEO_REVIEW: [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED]
+#             }
+#         }
+        
+#         try:
+#             new_status_enum = ApplicationStatus(new_status)
+#         except ValueError:
+#             return jsonify({'error': 'Invalid status'}), 400
+        
+#         # Check if transition is valid
+#         if admin.role not in valid_transitions:
+#             return jsonify({'error': 'No permission to update status'}), 403
+        
+#         if application.status not in valid_transitions[admin.role]:
+#             return jsonify({'error': f'Cannot update application in {application.status.value} status'}), 400
+        
+#         if new_status_enum not in valid_transitions[admin.role][application.status]:
+#             return jsonify({'error': f'Invalid status transition from {application.status.value} to {new_status}'}), 400
+        
+#         # Update application
+#         old_status = application.status
+#         application.status = new_status_enum
+#         application.processed_by_id = admin.id
+#         application.last_modified = datetime.utcnow()
+        
+#         # Add comment if provided
+#         if comment_content.strip():
+#             comment = ApplicationComment(
+#                 content=comment_content.strip(),
+#                 performed_by_id=admin.id,
+#                 application_id=application.id
+#             )
+#             db.session.add(comment)
+        
+#         # If approved, generate certificate number and update status to certificate issued
+#         if new_status_enum == ApplicationStatus.APPROVED:
+#             application.certificate_number = f"RGB-{datetime.now().year}-{application.id:06d}"
+#             application.certificate_issued_at = datetime.utcnow()
+#             application.status = ApplicationStatus.CERTIFICATE_ISSUED
+        
+#         db.session.commit()
+        
+#         # Create notification for applicant
+#         notification = Notification(
+#             applicant_id=application.applicant_id,
+#             application_id=application.id,
+#             type=NotificationType.STATUS_CHANGE,
+#             title=f'Application Status Updated',
+#             message=f'Your application for {application.organization_name} has been updated to {new_status_enum.value}'
+#         )
+#         db.session.add(notification)
+        
+#         # Create notification for next role if status moved forward
+#         next_role_map = {
+#             ApplicationStatus.TRANSFER_TO_DM: AdminRole.DIVISION_MANAGER,
+#             ApplicationStatus.TRANSFER_TO_HOD: AdminRole.HOD,
+#             ApplicationStatus.TRANSFER_TO_SG: AdminRole.SECRETARY_GENERAL,
+#             ApplicationStatus.TRANSFER_TO_CEO: AdminRole.CEO
+#         }
+        
+#         if new_status_enum in next_role_map:
+#             next_admins = Admin.query.filter_by(role=next_role_map[new_status_enum], enabled=True).all()
+#             for next_admin in next_admins:
+#                 notification = Notification(
+#                     admin_id=next_admin.id,
+#                     application_id=application.id,
+#                     type=NotificationType.STATUS_CHANGE,
+#                     title='Application Ready for Review',
+#                     message=f'Application for {application.organization_name} is ready for your review'
+#                 )
+#                 db.session.add(notification)
+        
+#         db.session.commit()
+        
+#         # Send real-time notifications
+#         socketio.emit('status_update', {
+#             'application_id': application.id,
+#             'old_status': old_status.value,
+#             'new_status': new_status_enum.value,
+#             'comment': comment_content
+#         }, room=f'applicant_{application.applicant_id}')
+        
+#         return jsonify({
+#             'message': 'Application status updated successfully',
+#             'application': application.to_dict()
+#         })
+        
+#     except Exception as e:
+#         db.session.rollback()
+#         return jsonify({'error': f'Failed to update application status: {str(e)}'}), 500
+
+
+
 @bp.route('/status', methods=['PUT'])
 @admin_required()
 def update_application_status():
@@ -282,7 +405,7 @@ def update_application_status():
             },
             AdminRole.SECRETARY_GENERAL: {
                 ApplicationStatus.TRANSFER_TO_SG: [ApplicationStatus.SG_REVIEW],
-                ApplicationStatus.SG_REVIEW: [ApplicationStatus.TRANSFER_TO_CEO, ApplicationStatus.REJECTED]
+                ApplicationStatus.SG_REVIEW: [ApplicationStatus.TRANSFER_TO_CEO, ApplicationStatus.REJECTED, ApplicationStatus.REVIEWING_AGAIN]
             },
             AdminRole.CEO: {
                 ApplicationStatus.TRANSFER_TO_CEO: [ApplicationStatus.CEO_REVIEW],
@@ -360,11 +483,82 @@ def update_application_status():
         
         db.session.commit()
         
+        # Send email notifications for specific status changes
+        applicant_email = application.applicant.email
+        organization_name = application.organization_name
+        
+        # Send email based on the status change
+        if new_status_enum == ApplicationStatus.REVIEWING_AGAIN or (
+            old_status == ApplicationStatus.CEO_REVIEW and new_status_enum == ApplicationStatus.APPROVED) or (
+            new_status_enum == ApplicationStatus.REJECTED):
+            
+            # Prepare email content based on status
+            if new_status_enum == ApplicationStatus.REVIEWING_AGAIN:
+                subject = f"Action Required: Your Application Needs Revision - {organization_name}"
+                body = f"""
+                Dear {application.applicant.firstname} {application.applicant.lastname},
+                
+                Your application for "{organization_name}" requires revisions before it can proceed.
+                
+                Please log into your account and review the comments from our team:
+                {comment_content}
+                
+                Please make the necessary changes and resubmit your application at your earliest convenience.
+                
+                Best regards,
+                The RGB Registration Team
+                """
+            
+            elif new_status_enum == ApplicationStatus.REJECTED:
+                subject = f"Application Status Update: {organization_name}"
+                body = f"""
+                Dear {application.applicant.firstname} {application.applicant.lastname},
+                
+                We regret to inform you that your application for "{organization_name}" has been rejected.
+                
+                Reason for rejection:
+                {comment_content}
+                
+                If you believe this decision was made in error or if you would like to discuss this further,
+                please contact our support team.
+                
+                Best regards,
+                The RGB Registration Team
+                """
+            
+            elif old_status == ApplicationStatus.CEO_REVIEW and application.status == ApplicationStatus.CERTIFICATE_ISSUED:
+                subject = f"Congratulations! Your Application Has Been Approved - {organization_name}"
+                body = f"""
+                Dear {application.applicant.firstname} {application.applicant.lastname},
+                
+                We are pleased to inform you that your application for "{organization_name}" has been approved!
+                
+                Your certificate number is: {application.certificate_number}
+                
+                You can now download your certificate by logging into your account.
+                
+                Congratulations and thank you for registering with us.
+                
+                Best regards,
+                The RGB Registration Team
+                """
+            
+            # Send the email
+            try:
+                send_email(
+                    recipient=applicant_email,
+                    subject=subject,
+                    body=body
+                )
+                current_app.logger.info(f"Email sent to {applicant_email} regarding application status: {new_status_enum.value}")
+            except Exception as email_error:
+                current_app.logger.error(f"Failed to send email to {applicant_email}: {str(email_error)}")
+        
         # Send real-time notifications
         socketio.emit('status_update', {
             'application_id': application.id,
             'old_status': old_status.value,
-            'new_status': new_status_enum.value,
+            'new_status': new_status_enum.value if new_status_enum != ApplicationStatus.APPROVED else ApplicationStatus.CERTIFICATE_ISSUED.value,
             'comment': comment_content
         }, room=f'applicant_{application.applicant_id}')
         
@@ -375,6 +569,7 @@ def update_application_status():
         
     except Exception as e:
         db.session.rollback()
+        current_app.logger.error(f"Error updating application status: {str(e)}")
         return jsonify({'error': f'Failed to update application status: {str(e)}'}), 500
 
 @bp.route('/<int:application_id>/documents/requirements', methods=['GET'])
